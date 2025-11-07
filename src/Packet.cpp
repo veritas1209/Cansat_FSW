@@ -31,7 +31,7 @@ TelemetryPacket Packet::collectData() {
     TelemetryPacket packet;
     
     // 기본 정보
-    packet.teamId = "3167";  // 팀 ID (수정 필요)
+    packet.teamId = "1062";
     packet.missionTime = formatMissionTime(millis() - missionStartTime);
     packet.packetCount = packetCount;
     packet.mode = currentMode;
