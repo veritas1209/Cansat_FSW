@@ -5,6 +5,7 @@ Packet::Packet() {
     bmp = nullptr;
     imu = nullptr;
     gps = nullptr;
+    imuFilter = nullptr;
     
     packetCount = 0;
     currentState = "LAUNCH_PAD";
@@ -19,6 +20,11 @@ void Packet::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule) {
     gps = gpsModule;
     
     Serial.println("Packet - 센서 연결 완료");
+}
+
+void Packet::attachIMUFilter(IMUFilter* filter) {
+    imuFilter = filter;
+    Serial.println("Packet - IMU 필터 연결 완료");
 }
 
 void Packet::beginMission() {
@@ -52,17 +58,31 @@ TelemetryPacket Packet::collectData() {
     packet.voltage = 0.0;
     packet.current = 0.0;
     
-    // BNO085 자이로 데이터
+    // BNO085 데이터 - 필터 사용 여부에 따라 분기
     if (imu && imu->isInitialized()) {
-        packet.gyro_r = imu->getGyroRoll();
-        packet.gyro_p = imu->getGyroPitch();
-        packet.gyro_y = imu->getGyroYaw();
-        
-        // 가속도 데이터 - RPY 방향으로 변환된 값 사용
-        packet.accel_r = imu->getAccelRoll();
-        packet.accel_p = imu->getAccelPitch();
-        packet.accel_y = imu->getAccelYaw();
+        // 칼만 필터가 연결되어 있고 초기화되었으면 필터링된 값 사용
+        if (imuFilter && imuFilter->isInitialized()) {
+            // 필터링된 자이로 데이터
+            packet.gyro_r = imuFilter->getGyroRoll();
+            packet.gyro_p = imuFilter->getGyroPitch();
+            packet.gyro_y = imuFilter->getGyroYaw();
+            
+            // 필터링된 가속도 데이터
+            packet.accel_r = imuFilter->getAccelRoll();
+            packet.accel_p = imuFilter->getAccelPitch();
+            packet.accel_y = imuFilter->getAccelYaw();
+        } else {
+            // 필터가 없거나 초기화 안되었으면 Raw 값 사용
+            packet.gyro_r = imu->getGyroRoll();
+            packet.gyro_p = imu->getGyroPitch();
+            packet.gyro_y = imu->getGyroYaw();
+            
+            packet.accel_r = imu->getAccelRoll();
+            packet.accel_p = imu->getAccelPitch();
+            packet.accel_y = imu->getAccelYaw();
+        }
     } else {
+        // IMU 센서가 없으면 0
         packet.gyro_r = 0.0;
         packet.gyro_p = 0.0;
         packet.gyro_y = 0.0;
@@ -124,12 +144,12 @@ String Packet::formatCSV(const TelemetryPacket& packet) {
     csv += String(packet.voltage, 2) + ",";
     csv += String(packet.current, 2) + ",";
     
-    // BNO085 자이로
+    // BNO085 자이로 (필터링된 값)
     csv += String(packet.gyro_r, 2) + ",";
     csv += String(packet.gyro_p, 2) + ",";
     csv += String(packet.gyro_y, 2) + ",";
     
-    // BNO085 가속도
+    // BNO085 가속도 (필터링된 값)
     csv += String(packet.accel_r, 2) + ",";
     csv += String(packet.accel_p, 2) + ",";
     csv += String(packet.accel_y, 2) + ",";

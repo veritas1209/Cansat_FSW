@@ -6,6 +6,7 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
+#include "Filter.h"
 
 // 패킷 데이터 구조체
 struct TelemetryPacket {
@@ -25,7 +26,7 @@ struct TelemetryPacket {
     float voltage;           // V
     float current;           // A
     
-    // BNO085 데이터
+    // BNO085 데이터 (필터링된 값)
     float gyro_r;            // Roll (°)
     float gyro_p;            // Pitch (°)
     float gyro_y;            // Yaw (°)
@@ -51,6 +52,9 @@ private:
     BNO085* imu;
     GPS* gps;
     
+    // IMU 필터 참조
+    IMUFilter* imuFilter;
+    
     // 패킷 카운터
     uint32_t packetCount;
     
@@ -73,6 +77,9 @@ public:
     
     // 센서 연결
     void attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule);
+    
+    // IMU 필터 연결
+    void attachIMUFilter(IMUFilter* filter);
     
     // 미션 시작 (타이머 시작)
     void beginMission();
