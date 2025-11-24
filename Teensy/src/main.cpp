@@ -3,12 +3,16 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
+#include "SensorManager.h"
 #include "Packet.h"
 
 // 센서 객체 생성
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
+
+// 센서 매니저 생성
+SensorManager sensorManager;
 
 // 패킷 객체 생성
 Packet telemetry;
@@ -20,31 +24,19 @@ void setup() {
     Serial.println("=== Teensy 4.1 CanSat FSW ===");
     Serial.println();
     
-    // 센서 초기화
-    Serial.println("[ 센서 초기화 시작 ]");
-    bool bmp_ok = bmp.begin();
-    bool imu_ok = imu.begin();
-    bool gps_ok = gps.begin();
-    Serial.println();
+    // 센서 매니저에 센서 연결
+    sensorManager.attachSensors(&bmp, &imu, &gps);
     
-    // 센서 초기화 결과 출력
-    Serial.println("[ 센서 초기화 결과 ]");
-    Serial.print("  BMP390: "); Serial.println(bmp_ok ? "OK" : "FAIL");
-    Serial.print("  BNO085: "); Serial.println(imu_ok ? "OK" : "FAIL");
-    Serial.print("  GPS: "); Serial.println(gps_ok ? "OK" : "FAIL");
-    Serial.println();
+    // 모든 센서 초기화
+    sensorManager.initializeAll();
     
     // BNO085 칼만 필터 활성화
-    if (imu_ok) {
-        Serial.println("[ BNO085 칼만 필터 활성화 ]");
-        imu.enableFilter(
-            0.01,  // 자이로 프로세스 노이즈
-            0.1,   // 자이로 측정 노이즈
-            0.01,  // 가속도 프로세스 노이즈
-            0.5    // 가속도 측정 노이즈
-        );
-        Serial.println();
-    }
+    sensorManager.enableIMUFilter(
+        0.01,  // 자이로 프로세스 노이즈
+        0.1,   // 자이로 측정 노이즈
+        0.01,  // 가속도 프로세스 노이즈
+        0.5    // 가속도 측정 노이즈
+    );
     
     // 패킷 시스템에 센서 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
@@ -63,10 +55,8 @@ void setup() {
 void loop() {
     static unsigned long lastTransmit = 0;
     
-    // 센서 업데이트 (계속 호출)
-    bmp.update();
-    imu.update();  // BNO085 내부에서 필터링 자동 처리
-    gps.update();
+    // 모든 센서 업데이트 (SensorManager가 처리)
+    sensorManager.updateAll();
     
     // 1초마다 패킷 전송 (미션 시작된 경우만)
     if (millis() - lastTransmit >= 1000) {
@@ -104,7 +94,7 @@ void loop() {
         }
         else if (command == "CAL") {
             Serial.println(">>> 고도 캘리브레이션 시작!");
-            bmp.calibrateAltitude(100);
+            sensorManager.calibrateAltitude(100);
             telemetry.setCommandEcho("CAL");
         }
         else {
