@@ -6,12 +6,15 @@ BNO085::BNO085() {
     accel_x = accel_y = accel_z = 0.0;
     gyro_r = gyro_p = gyro_y = 0.0;
     quat_i = quat_j = quat_k = quat_real = 0.0;
-    accel_roll = accel_pitch = accel_yaw = 0.0;
+    accel_roll_raw = accel_pitch_raw = accel_yaw_raw = 0.0;
+    accel_roll_filtered = accel_pitch_filtered = accel_yaw_filtered = 0.0;
+    gyro_roll_filtered = gyro_pitch_filtered = gyro_yaw_filtered = 0.0;
     
     initialized = false;
     has_accel = false;
     has_gyro = false;
     has_quat = false;
+    filterEnabled = false;
     lastResetCheck = 0;
 }
 
@@ -80,6 +83,43 @@ bool BNO085::begin() {
     return bno_success;
 }
 
+void BNO085::enableFilter(float gyro_process_noise, 
+                          float gyro_measurement_noise,
+                          float accel_process_noise,
+                          float accel_measurement_noise) {
+    Serial.println("BNO085 - 칼만 필터 활성화 중...");
+    
+    imuFilter.begin(gyro_process_noise, 
+                    gyro_measurement_noise,
+                    accel_process_noise,
+                    accel_measurement_noise);
+    
+    filterEnabled = true;
+    
+    Serial.println("BNO085 - 칼만 필터 활성화 완료!");
+}
+
+void BNO085::disableFilter() {
+    filterEnabled = false;
+    Serial.println("BNO085 - 칼만 필터 비활성화");
+}
+
+void BNO085::setGyroNoise(float process_noise, float measurement_noise) {
+    if (filterEnabled) {
+        imuFilter.setGyroNoise(process_noise, measurement_noise);
+    } else {
+        Serial.println("BNO085 - 필터가 비활성화 상태입니다.");
+    }
+}
+
+void BNO085::setAccelNoise(float process_noise, float measurement_noise) {
+    if (filterEnabled) {
+        imuFilter.setAccelNoise(process_noise, measurement_noise);
+    } else {
+        Serial.println("BNO085 - 필터가 비활성화 상태입니다.");
+    }
+}
+
 void BNO085::update() {
     if (!initialized) return;
     
@@ -131,6 +171,25 @@ void BNO085::update() {
                 break;
         }
     }
+    
+    // 칼만 필터 업데이트 (필터 활성화 시)
+    if (filterEnabled && imuFilter.isInitialized()) {
+        // 자이로 필터링
+        if (has_gyro) {
+            imuFilter.updateGyro(gyro_r, gyro_p, gyro_y);
+            gyro_roll_filtered = imuFilter.getGyroRoll();
+            gyro_pitch_filtered = imuFilter.getGyroPitch();
+            gyro_yaw_filtered = imuFilter.getGyroYaw();
+        }
+        
+        // 가속도 필터링
+        if (has_accel && has_quat) {
+            imuFilter.updateAccel(accel_roll_raw, accel_pitch_raw, accel_yaw_raw);
+            accel_roll_filtered = imuFilter.getAccelRoll();
+            accel_pitch_filtered = imuFilter.getAccelPitch();
+            accel_yaw_filtered = imuFilter.getAccelYaw();
+        }
+    }
 }
 
 void BNO085::quaternionToEuler() {
@@ -173,12 +232,10 @@ void BNO085::transformAccelToRPY() {
     float temp_k = quat_real * accel_z + quat_i * accel_y - quat_j * accel_x;
     
     // 두 번째 곱셈: (q * v) * q^(-1)
-    accel_roll = temp_i * q_conj_real + temp_real * q_conj_i + 
-                 temp_j * q_conj_k - temp_k * q_conj_j;
-    accel_pitch = temp_j * q_conj_real + temp_real * q_conj_j + 
-                  temp_k * q_conj_i - temp_i * q_conj_k;
-    accel_yaw = temp_k * q_conj_real + temp_real * q_conj_k + 
-                temp_i * q_conj_j - temp_j * q_conj_i;
+    accel_roll_raw = temp_i * q_conj_real + temp_real * q_conj_i + 
+                     temp_j * q_conj_k - temp_k * q_conj_j;
+    accel_pitch_raw = temp_j * q_conj_real + temp_real * q_conj_j + 
+                      temp_k * q_conj_i - temp_i * q_conj_k;
+    accel_yaw_raw = temp_k * q_conj_real + temp_real * q_conj_k + 
+                    temp_i * q_conj_j - temp_j * q_conj_i;
 }
-
-/*test*/

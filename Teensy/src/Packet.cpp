@@ -5,13 +5,13 @@ Packet::Packet() {
     bmp = nullptr;
     imu = nullptr;
     gps = nullptr;
-    imuFilter = nullptr;
     
     packetCount = 0;
     currentState = "LAUNCH_PAD";
     currentMode = 'F';
     lastCommand = "NONE";
     missionStartTime = 0;
+    missionStarted = false;
 }
 
 void Packet::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule) {
@@ -22,15 +22,18 @@ void Packet::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule) {
     Serial.println("Packet - 센서 연결 완료");
 }
 
-void Packet::attachIMUFilter(IMUFilter* filter) {
-    imuFilter = filter;
-    Serial.println("Packet - IMU 필터 연결 완료");
-}
-
-void Packet::beginMission() {
+void Packet::startMission() {
     missionStartTime = millis();
     packetCount = 0;
+    missionStarted = true;
     Serial.println("Packet - 미션 시작!");
+    Serial.print("  시작 시간: ");
+    Serial.println(missionStartTime);
+}
+
+void Packet::stopMission() {
+    missionStarted = false;
+    Serial.println("Packet - 미션 종료!");
 }
 
 TelemetryPacket Packet::collectData() {
@@ -38,7 +41,14 @@ TelemetryPacket Packet::collectData() {
     
     // 기본 정보
     packet.teamId = "1062";
-    packet.missionTime = formatMissionTime(millis() - missionStartTime);
+    
+    // 미션 시간 계산
+    if (missionStarted) {
+        packet.missionTime = formatMissionTime(millis() - missionStartTime);
+    } else {
+        packet.missionTime = "00:00:00";
+    }
+    
     packet.packetCount = packetCount;
     packet.mode = currentMode;
     packet.state = currentState;
@@ -58,31 +68,16 @@ TelemetryPacket Packet::collectData() {
     packet.voltage = 0.0;
     packet.current = 0.0;
     
-    // BNO085 데이터 - 필터 사용 여부에 따라 분기
+    // BNO085 데이터 - 필터링된 값 사용 (BNO085 내부에서 필터링)
     if (imu && imu->isInitialized()) {
-        // 칼만 필터가 연결되어 있고 초기화되었으면 필터링된 값 사용
-        if (imuFilter && imuFilter->isInitialized()) {
-            // 필터링된 자이로 데이터
-            packet.gyro_r = imuFilter->getGyroRoll();
-            packet.gyro_p = imuFilter->getGyroPitch();
-            packet.gyro_y = imuFilter->getGyroYaw();
-            
-            // 필터링된 가속도 데이터
-            packet.accel_r = imuFilter->getAccelRoll();
-            packet.accel_p = imuFilter->getAccelPitch();
-            packet.accel_y = imuFilter->getAccelYaw();
-        } else {
-            // 필터가 없거나 초기화 안되었으면 Raw 값 사용
-            packet.gyro_r = imu->getGyroRoll();
-            packet.gyro_p = imu->getGyroPitch();
-            packet.gyro_y = imu->getGyroYaw();
-            
-            packet.accel_r = imu->getAccelRoll();
-            packet.accel_p = imu->getAccelPitch();
-            packet.accel_y = imu->getAccelYaw();
-        }
+        packet.gyro_r = imu->getGyroRoll();
+        packet.gyro_p = imu->getGyroPitch();
+        packet.gyro_y = imu->getGyroYaw();
+        
+        packet.accel_r = imu->getAccelRoll();
+        packet.accel_p = imu->getAccelPitch();
+        packet.accel_y = imu->getAccelYaw();
     } else {
-        // IMU 센서가 없으면 0
         packet.gyro_r = 0.0;
         packet.gyro_p = 0.0;
         packet.gyro_y = 0.0;
@@ -167,10 +162,8 @@ String Packet::formatCSV(const TelemetryPacket& packet) {
     return csv;
 }
 
-void Packet::transmit() {
-    String packetStr = generatePacketString();
-    Serial.println(packetStr);
-    packetCount++;  // 전송 후 카운터 증가
+String Packet::getCSVHeader() {
+    return "TEAM_ID,MISSION_TIME,PACKET_COUNT,MODE,STATE,ALTITUDE,TEMPERATURE,ATM_PRESSURE,VOLTAGE,CURRENT,GYRO_R,GYRO_P,GYRO_Y,ACCEL_R,ACCEL_P,ACCEL_Y,GPS_TIME,GPS_ALTITUDE,GPS_LATITUDE,GPS_LONGITUDE,GPS_SATS,CMD_ECHO";
 }
 
 String Packet::formatMissionTime(unsigned long elapsedMillis) {

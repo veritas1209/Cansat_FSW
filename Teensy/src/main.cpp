@@ -3,16 +3,12 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
-#include "Filter.h"
 #include "Packet.h"
 
 // 센서 객체 생성
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
-
-// IMU 칼만 필터 객체 생성
-IMUFilter imuFilter;
 
 // 패킷 객체 생성
 Packet telemetry;
@@ -38,110 +34,82 @@ void setup() {
     Serial.print("  GPS: "); Serial.println(gps_ok ? "OK" : "FAIL");
     Serial.println();
     
-    // 고도 캘리브레이션 (선택사항)
-    if (bmp_ok) {
-        Serial.println("[ 기압계 캘리브레이션 ]");
-        bmp.calibrateAltitude(100);
+    // BNO085 칼만 필터 활성화
+    if (imu_ok) {
+        Serial.println("[ BNO085 칼만 필터 활성화 ]");
+        imu.enableFilter(
+            0.01,  // 자이로 프로세스 노이즈
+            0.1,   // 자이로 측정 노이즈
+            0.01,  // 가속도 프로세스 노이즈
+            0.5    // 가속도 측정 노이즈
+        );
         Serial.println();
     }
-    
-    // IMU 칼만 필터 초기화
-    Serial.println("[ IMU 칼만 필터 초기화 ]");
-    imuFilter.begin(
-        0.01,  // 자이로 프로세스 노이즈
-        0.1,   // 자이로 측정 노이즈
-        0.01,  // 가속도 프로세스 노이즈
-        0.5    // 가속도 측정 노이즈
-    );
-    Serial.println();
     
     // 패킷 시스템에 센서 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
     
-    // 패킷 시스템에 IMU 필터 연결
-    telemetry.attachIMUFilter(&imuFilter);
+    // CSV 헤더 출력 (Serial)
+    Serial.println("\n=== CSV 헤더 ===");
+    Serial.println(Packet::getCSVHeader());
     
-    // 미션 시작
-    telemetry.beginMission();
-    
-    Serial.println("\n=== 패킷 전송 시작 ===\n");
-    
-    // CSV 헤더 출력
-    Serial.println("TEAM_ID,MISSION_TIME,PACKET_COUNT,MODE,STATE,ALTITUDE,TEMPERATURE,ATM_PRESSURE,VOLTAGE,CURRENT,GYRO_R,GYRO_P,GYRO_Y,ACCEL_R,ACCEL_P,ACCEL_Y,GPS_TIME,GPS_ALTITUDE,GPS_LATITUDE,GPS_LONGITUDE,GPS_SATS,CMD_ECHO");
+    Serial.println("\n=== 시스템 준비 완료 ===");
+    Serial.println("명령어 대기 중... (CX_ON으로 미션 시작)");
+    Serial.println();
     
     delay(1000);
 }
 
 void loop() {
-    static unsigned long lastPrint = 0;
+    static unsigned long lastTransmit = 0;
     
     // 센서 업데이트 (계속 호출)
     bmp.update();
-    imu.update();
+    imu.update();  // BNO085 내부에서 필터링 자동 처리
     gps.update();
     
-    // IMU 칼만 필터 업데이트 (센서 읽기 직후)
-    if (imu.isInitialized() && imuFilter.isInitialized()) {
-        // Raw 데이터 읽기
-        float raw_gyro_r = imu.getGyroRoll();
-        float raw_gyro_p = imu.getGyroPitch();
-        float raw_gyro_y = imu.getGyroYaw();
+    // 1초마다 패킷 전송 (미션 시작된 경우만)
+    if (millis() - lastTransmit >= 1000) {
+        lastTransmit = millis();
         
-        float raw_accel_r = imu.getAccelRoll();
-        float raw_accel_p = imu.getAccelPitch();
-        float raw_accel_y = imu.getAccelYaw();
-        
-        // 칼만 필터 업데이트
-        imuFilter.updateGyro(raw_gyro_r, raw_gyro_p, raw_gyro_y);
-        imuFilter.updateAccel(raw_accel_r, raw_accel_p, raw_accel_y);
+        if (telemetry.isMissionStarted()) {
+            // 패킷 문자열 생성
+            String packetStr = telemetry.generatePacketString();
+            
+            // Serial 출력
+            Serial.println(packetStr);
+            
+            // 패킷 카운터 증가
+            telemetry.incrementPacketCount();
+        }
     }
     
-    // 1초마다 패킷 전송
-    if (millis() - lastPrint >= 1000) {
-        lastPrint = millis();
+    // 임시 테스트용: Serial로 명령어 입력 받기
+    if (Serial.available()) {
+        String command = Serial.readStringUntil('\n');
+        command.trim();
         
-        // 디버그 출력 (선택사항 - 주석 처리 가능)
-        /*
-        Serial.println("\n--- 센서 데이터 (Raw vs Filtered) ---");
+        Serial.print("수신된 명령어: ");
+        Serial.println(command);
         
-        if (imu.isInitialized()) {
-            Serial.println("자이로 (Raw -> Filtered):");
-            Serial.print("  Roll:  ");
-            Serial.print(imu.getGyroRoll(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getGyroRoll(), 2);
-            
-            Serial.print("  Pitch: ");
-            Serial.print(imu.getGyroPitch(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getGyroPitch(), 2);
-            
-            Serial.print("  Yaw:   ");
-            Serial.print(imu.getGyroYaw(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getGyroYaw(), 2);
-            
-            Serial.println("가속도 (Raw -> Filtered):");
-            Serial.print("  Roll:  ");
-            Serial.print(imu.getAccelRoll(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getAccelRoll(), 2);
-            
-            Serial.print("  Pitch: ");
-            Serial.print(imu.getAccelPitch(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getAccelPitch(), 2);
-            
-            Serial.print("  Yaw:   ");
-            Serial.print(imu.getAccelYaw(), 2);
-            Serial.print(" -> ");
-            Serial.println(imuFilter.getAccelYaw(), 2);
+        if (command == "CX_ON") {
+            Serial.println(">>> 미션 시작!");
+            telemetry.startMission();
+            telemetry.setCommandEcho("CX,ON");
+        } 
+        else if (command == "CX_OFF") {
+            Serial.println(">>> 미션 종료!");
+            telemetry.stopMission();
+            telemetry.setCommandEcho("CX,OFF");
         }
-        
-        Serial.println("-------------------\n");
-        */
-        
-        // 패킷 전송 (필터링된 데이터 사용)
-        telemetry.transmit();
+        else if (command == "CAL") {
+            Serial.println(">>> 고도 캘리브레이션 시작!");
+            bmp.calibrateAltitude(100);
+            telemetry.setCommandEcho("CAL");
+        }
+        else {
+            Serial.println(">>> 알 수 없는 명령어");
+            telemetry.setCommandEcho("UNKNOWN");
+        }
     }
 }

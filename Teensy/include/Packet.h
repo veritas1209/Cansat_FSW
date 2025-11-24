@@ -6,7 +6,6 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
-#include "Filter.h"
 
 // 패킷 데이터 구조체
 struct TelemetryPacket {
@@ -52,9 +51,6 @@ private:
     BNO085* imu;
     GPS* gps;
     
-    // IMU 필터 참조
-    IMUFilter* imuFilter;
-    
     // 패킷 카운터
     uint32_t packetCount;
     
@@ -63,8 +59,9 @@ private:
     char currentMode;
     String lastCommand;
     
-    // 미션 시작 시간 (밀리초)
+    // 미션 시작 시간 (밀리초) - CMD에서 제어
     unsigned long missionStartTime;
+    bool missionStarted;
     
     // CSV 문자열 생성 헬퍼
     String formatCSV(const TelemetryPacket& packet);
@@ -78,20 +75,19 @@ public:
     // 센서 연결
     void attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule);
     
-    // IMU 필터 연결
-    void attachIMUFilter(IMUFilter* filter);
-    
-    // 미션 시작 (타이머 시작)
-    void beginMission();
+    // 미션 시작/종료 (CMD에서 호출)
+    void startMission();
+    void stopMission();
+    bool isMissionStarted() { return missionStarted; }
     
     // 패킷 데이터 수집 및 생성
     TelemetryPacket collectData();
     
-    // CSV 문자열로 패킷 생성
+    // CSV 문자열로 패킷 생성 (XBee, SD에서 사용)
     String generatePacketString();
     
-    // 패킷 전송 (Serial)
-    void transmit();
+    // CSV 헤더 문자열 반환
+    static String getCSVHeader();
     
     // 상태 설정 (임시 - 나중에 State 모듈로 대체)
     void setState(String state) { currentState = state; }
@@ -100,6 +96,9 @@ public:
     
     // 카운터 접근
     uint32_t getPacketCount() { return packetCount; }
+    
+    // 패킷 카운터 증가 (전송 후 호출)
+    void incrementPacketCount() { packetCount++; }
 };
 
 #endif
