@@ -3,6 +3,7 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
+#include "sensors/Audio.h"
 #include "SensorManager.h"
 #include "Packet.h"
 
@@ -10,6 +11,7 @@
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
+Audio audio;
 
 // 센서 매니저 생성
 SensorManager sensorManager;
@@ -38,6 +40,11 @@ void setup() {
         0.5    // 가속도 측정 노이즈
     );
     
+    // 오디오 부저 초기화
+    Serial.println("[ 오디오 부저 초기화 ]");
+    audio.begin();
+    Serial.println();
+    
     // 패킷 시스템에 센서 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
     
@@ -46,7 +53,12 @@ void setup() {
     Serial.println(Packet::getCSVHeader());
     
     Serial.println("\n=== 시스템 준비 완료 ===");
-    Serial.println("명령어 대기 중... (CX_ON으로 미션 시작)");
+    Serial.println("명령어 대기 중...");
+    Serial.println("  CX_ON  - 미션 시작");
+    Serial.println("  CX_OFF - 미션 종료");
+    Serial.println("  CAL    - 고도 캘리브레이션");
+    Serial.println("  BEEP   - 부저 테스트 (연속 비프)");
+    Serial.println("  STOP   - 부저 중지");
     Serial.println();
     
     delay(1000);
@@ -57,6 +69,9 @@ void loop() {
     
     // 모든 센서 업데이트 (SensorManager가 처리)
     sensorManager.updateAll();
+    
+    // 오디오 부저 업데이트 (연속 비프용)
+    audio.update();
     
     // 1초마다 패킷 전송 (미션 시작된 경우만)
     if (millis() - lastTransmit >= 1000) {
@@ -97,9 +112,17 @@ void loop() {
             sensorManager.calibrateAltitude(100);
             telemetry.setCommandEcho("CAL");
         }
+        else if (command == "BEEP") {
+            Serial.println(">>> 부저 테스트 시작! (1초마다 200ms 비프)");
+            audio.startBeep(1000, 200);
+        }
+        else if (command == "STOP") {
+            Serial.println(">>> 부저 중지!");
+            audio.stopBeep();
+        }
         else {
             Serial.println(">>> 알 수 없는 명령어");
             telemetry.setCommandEcho("UNKNOWN");
         }
     }
-    //ㅁㄴㅇㄹ
+}
