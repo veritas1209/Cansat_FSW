@@ -7,7 +7,7 @@
 #include <Adafruit_BNO08x.h>
 #include "Filter.h"
 
-#define BNO085_INT 15
+// INT 핀 사용 안 함 (폴링 모드)
 
 class BNO085 {
 private:
@@ -34,8 +34,6 @@ private:
     bool has_accel;
     bool has_gyro;
     bool has_quat;
-    
-    unsigned long lastResetCheck;
     
     // 쿼터니언을 오일러각으로 변환
     void quaternionToEuler();

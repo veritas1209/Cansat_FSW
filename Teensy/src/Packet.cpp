@@ -189,3 +189,8 @@ String Packet::formatMissionTime(unsigned long elapsedMillis) {
     int hours = (totalSeconds / 3600) % 24;
     int minutes = (totalSeconds / 60) % 60;
     int seconds = totalSeconds % 60;
+    
+    char timeStr[9];
+    sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
+    return String(timeStr);
+}

@@ -15,34 +15,16 @@ BNO085::BNO085() {
     has_gyro = false;
     has_quat = false;
     filterEnabled = false;
-    lastResetCheck = 0;
 }
 
 bool BNO085::begin() {
-    Serial.println("BNO085 초기화 시작...");
+    Serial.println("BNO085 초기화 시작 (2025 방식 - 폴링 모드)...");
     
-    pinMode(BNO085_INT, INPUT);
+    // Wire1 초기화
     Wire1.begin();
-    Wire1.setClock(100000); // 100kHz (안정성)
-    delay(500);
-    
-    // I2C 주소 스캔
-    Serial.print("I2C Wire1 스캔 중... ");
-    Wire1.beginTransmission(0x4A);
-    byte error1 = Wire1.endTransmission();
-    Wire1.beginTransmission(0x4B);
-    byte error2 = Wire1.endTransmission();
-    Serial.print("0x4A: ");
-    Serial.print(error1 == 0 ? "발견!" : "없음");
-    Serial.print(" (오류코드: ");
-    Serial.print(error1);
-    Serial.print("), 0x4B: ");
-    Serial.print(error2 == 0 ? "발견!" : "없음");
-    Serial.print(" (오류코드: ");
-    Serial.print(error2);
-    Serial.println(")");
-    
+    Wire1.setClock(400000);  // 400kHz
     delay(100);
+    
     Serial.print("BNO085 연결 시도 (0x4A)... ");
     
     // 여러 번 시도
@@ -52,31 +34,37 @@ bool BNO085::begin() {
             Serial.print("재시도 ");
             Serial.print(attempt);
             Serial.print("... ");
-            delay(500);
+            delay(1000);
         }
         
-        if (bno08x.begin_I2C(0x4A, &Wire1, BNO085_INT)) {
+        // INT 핀 없이 초기화 (폴링 모드)
+        if (bno08x.begin_I2C(0x4A, &Wire1)) {
             Serial.println("성공!");
             bno_success = true;
             delay(100);
             
-            // 센서 리포트 활성화
+            // 센서 리포트 활성화 (2025 방식: 주기 지정 없음)
             Serial.println("센서 리포트 활성화 중...");
-            if (bno08x.enableReport(SH2_ACCELEROMETER, 50000)) {
-                Serial.println("  - 가속도계 활성화 성공");
-            }
-            if (bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000)) {
-                Serial.println("  - 자이로 활성화 성공");
-            }
-            if (bno08x.enableReport(SH2_ROTATION_VECTOR, 50000)) {
-                Serial.println("  - 회전벡터 활성화 성공");
-            }
+            
+            bno08x.enableReport(SH2_ACCELEROMETER);
+            delay(10);
+            bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED);
+            delay(10);
+            bno08x.enableReport(SH2_ROTATION_VECTOR);
+            delay(10);
+            
+            Serial.println("  - 가속도계 활성화");
+            Serial.println("  - 자이로 활성화");
+            Serial.println("  - 회전벡터 활성화");
+            
+            // 센서 안정화 대기
+            delay(2000);
             break;
         }
     }
     
     if (!bno_success) {
-        Serial.println("실패! RST 핀 확인 또는 센서 재부팅 필요");
+        Serial.println("실패! 센서 연결 확인 필요");
     }
     
     initialized = bno_success;
@@ -107,36 +95,21 @@ void BNO085::disableFilter() {
 void BNO085::setGyroNoise(float process_noise, float measurement_noise) {
     if (filterEnabled) {
         imuFilter.setGyroNoise(process_noise, measurement_noise);
-    } else {
-        Serial.println("BNO085 - 필터가 비활성화 상태입니다.");
     }
 }
 
 void BNO085::setAccelNoise(float process_noise, float measurement_noise) {
     if (filterEnabled) {
         imuFilter.setAccelNoise(process_noise, measurement_noise);
-    } else {
-        Serial.println("BNO085 - 필터가 비활성화 상태입니다.");
     }
 }
 
 void BNO085::update() {
     if (!initialized) return;
     
-    // 리셋 체크 (1초에 한 번)
-    if (millis() - lastResetCheck > 1000) {
-        lastResetCheck = millis();
-        if (bno08x.wasReset()) {
-            Serial.println("BNO085 - 리셋 감지됨, 재활성화 중...");
-            bno08x.enableReport(SH2_ACCELEROMETER, 50000);
-            bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED, 50000);
-            bno08x.enableReport(SH2_ROTATION_VECTOR, 50000);
-            delay(100);
-        }
-    }
-    
-    // 센서 이벤트 읽기
-    while (bno08x.getSensorEvent(&sensorValue)) {
+    // 2025 방식: 순수 폴링, 리셋 체크 없음
+    // getSensorEvent()로 센서 이벤트 읽기
+    if (bno08x.getSensorEvent(&sensorValue)) {
         switch (sensorValue.sensorId) {
             case SH2_ACCELEROMETER:
                 accel_x = sensorValue.un.accelerometer.x;
@@ -175,7 +148,7 @@ void BNO085::update() {
     // 칼만 필터 업데이트 (필터 활성화 시)
     if (filterEnabled && imuFilter.isInitialized()) {
         // 자이로 필터링
-        if (has_gyro) {
+        if (has_gyro && has_quat) {
             imuFilter.updateGyro(gyro_r, gyro_p, gyro_y);
             gyro_roll_filtered = imuFilter.getGyroRoll();
             gyro_pitch_filtered = imuFilter.getGyroPitch();
@@ -215,9 +188,6 @@ void BNO085::quaternionToEuler() {
 void BNO085::transformAccelToRPY() {
     // 쿼터니언을 사용하여 센서 좌표계(XYZ)의 가속도를
     // 월드 좌표계(RPY 방향)로 변환
-    
-    // 쿼터니언 회전 공식: v' = q * v * q^(-1)
-    // 여기서는 역회전을 적용 (센서->월드)
     
     // 쿼터니언의 켤레 (역회전용)
     float q_conj_i = -quat_i;
