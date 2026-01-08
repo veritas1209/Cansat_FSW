@@ -48,7 +48,7 @@ Teensy/
 │   ├── Filter.h              # ✅ 칼만 필터
 │   ├── Packet.h              # ✅ 텔레메트리 패킷
 │   ├── State.h               # ✅ 비행 상태 관리
-│   ├── CMD.h                 # ⏳ 명령 처리 (빈 파일)
+│   ├── CMD.h                 # ⏳ 명령 처리
 │   ├── DCS.h                 # ⏳ 데이터 수집 시스템
 │   ├── EggDrop.h             # ⏳ 계란 방출 제어
 │   ├── Mode.h                # ⏳ 모드 관리
@@ -60,7 +60,7 @@ Teensy/
 │       ├── GPS.h             # ✅ GPS 모듈
 │       ├── Audio.h           # ✅ 부저 제어
 │       ├── SensorManager.h   # ✅ 센서 통합 관리
-│       ├── SDCARD.h          # ⏳ SD 카드 (구현 중)
+│       ├── SDCARD.h          # ⏳ SD 카드
 │       ├── XBee_Module.h     # ⏳ XBee 통신
 │       ├── Servo.h           # ⏳ 서보 제어
 │       └── Teensy_Camera.h   # ⏳ 카메라
