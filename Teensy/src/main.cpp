@@ -24,7 +24,7 @@ Packet telemetry;
 State flightState;
 
 void setup() {
-    Serial.begin(9600));
+    Serial.begin(9600);
     delay(2000);
     
     Serial.println("=== Teensy 4.1 CanSat FSW ===");
