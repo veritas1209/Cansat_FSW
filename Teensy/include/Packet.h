@@ -6,6 +6,7 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
+#include "State.h"  // State 모듈 추가
 
 // 패킷 데이터 구조체
 struct TelemetryPacket {
@@ -50,16 +51,16 @@ private:
     BMP390* bmp;
     BNO085* imu;
     GPS* gps;
+    State* state;  // State 모듈 참조 추가
     
     // 패킷 카운터
     uint32_t packetCount;
     
-    // 임시 상태 (나중에 State.h로 이동)
-    String currentState;
+    // 모드
     char currentMode;
     String lastCommand;
     
-    // 미션 시작 시간 (밀리초) - CMD에서 제어
+    // 미션 시작 시간 (밀리초)
     unsigned long missionStartTime;
     bool missionStarted;
     
@@ -72,10 +73,11 @@ private:
 public:
     Packet();
     
-    // 센서 연결
+    // 센서 및 State 연결
     void attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule);
+    void attachState(State* stateModule);  // State 연결 함수 추가
     
-    // 미션 시작/종료 (CMD에서 호출)
+    // 미션 시작/종료
     void startMission();
     void stopMission();
     bool isMissionStarted() { return missionStarted; }
@@ -89,8 +91,7 @@ public:
     // CSV 헤더 문자열 반환
     static String getCSVHeader();
     
-    // 상태 설정 (임시 - 나중에 State 모듈로 대체)
-    void setState(String state) { currentState = state; }
+    // 모드 및 명령어 설정
     void setMode(char mode) { currentMode = mode; }
     void setCommandEcho(String cmd) { lastCommand = cmd; }
     

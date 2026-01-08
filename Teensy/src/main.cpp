@@ -6,6 +6,7 @@
 #include "sensors/Audio.h"
 #include "SensorManager.h"
 #include "Packet.h"
+#include "State.h"  // State 모듈 추가
 
 // 센서 객체 생성
 BMP390 bmp;
@@ -19,8 +20,11 @@ SensorManager sensorManager;
 // 패킷 객체 생성
 Packet telemetry;
 
+// State 객체 생성
+State flightState;
+
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(9600));
     delay(2000);
     
     Serial.println("=== Teensy 4.1 CanSat FSW ===");
@@ -45,8 +49,15 @@ void setup() {
     audio.begin();
     Serial.println();
     
-    // 패킷 시스템에 센서 연결
+    // State 모듈 초기화
+    Serial.println("[ State 모듈 초기화 ]");
+    flightState.attachSensors(&bmp, &imu, &gps);
+    flightState.begin();
+    Serial.println();
+    
+    // 패킷 시스템에 센서 및 State 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
+    telemetry.attachState(&flightState);
     
     // CSV 헤더 출력 (Serial)
     Serial.println("\n=== CSV 헤더 ===");
@@ -57,6 +68,7 @@ void setup() {
     Serial.println("  CX_ON  - 미션 시작");
     Serial.println("  CX_OFF - 미션 종료");
     Serial.println("  CAL    - 고도 캘리브레이션");
+    Serial.println("  STATUS - State 상태 출력");
     Serial.println("  BEEP   - 부저 테스트 (연속 비프)");
     Serial.println("  STOP   - 부저 중지");
     Serial.println();
@@ -69,6 +81,9 @@ void loop() {
     
     // 모든 센서 업데이트 (SensorManager가 처리)
     sensorManager.updateAll();
+    
+    // State 업데이트 (비행 상태 자동 전환)
+    flightState.update();
     
     // 오디오 부저 업데이트 (연속 비프용)
     audio.update();
@@ -99,18 +114,24 @@ void loop() {
         
         if (command == "CX_ON") {
             Serial.println(">>> 미션 시작!");
+            flightState.startMission();  // State에도 미션 시작 알림
             telemetry.startMission();
             telemetry.setCommandEcho("CX,ON");
         } 
         else if (command == "CX_OFF") {
             Serial.println(">>> 미션 종료!");
+            flightState.stopMission();  // State에도 미션 종료 알림
             telemetry.stopMission();
             telemetry.setCommandEcho("CX,OFF");
         }
         else if (command == "CAL") {
             Serial.println(">>> 고도 캘리브레이션 시작!");
-            sensorManager.calibrateAltitude(100);
+            flightState.calibrate();  // State 모듈에서 보정
             telemetry.setCommandEcho("CAL");
+        }
+        else if (command == "STATUS") {
+            Serial.println(">>> State 상태 출력!");
+            flightState.printStatus();
         }
         else if (command == "BEEP") {
             Serial.println(">>> 부저 테스트 시작! (1초마다 200ms 비프)");

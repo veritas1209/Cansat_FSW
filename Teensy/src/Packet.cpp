@@ -5,9 +5,9 @@ Packet::Packet() {
     bmp = nullptr;
     imu = nullptr;
     gps = nullptr;
+    state = nullptr;  // State 초기화
     
     packetCount = 0;
-    currentState = "LAUNCH_PAD";
     currentMode = 'F';
     lastCommand = "NONE";
     missionStartTime = 0;
@@ -20,6 +20,11 @@ void Packet::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule) {
     gps = gpsModule;
     
     Serial.println("Packet - 센서 연결 완료");
+}
+
+void Packet::attachState(State* stateModule) {
+    state = stateModule;
+    Serial.println("Packet - State 모듈 연결 완료");
 }
 
 void Packet::startMission() {
@@ -51,11 +56,22 @@ TelemetryPacket Packet::collectData() {
     
     packet.packetCount = packetCount;
     packet.mode = currentMode;
-    packet.state = currentState;
+    
+    // State 모듈에서 상태 가져오기
+    if (state) {
+        packet.state = state->getStateString();
+    } else {
+        packet.state = "UNKNOWN";
+    }
     
     // BMP390 데이터
     if (bmp && bmp->isInitialized()) {
-        packet.altitude = bmp->getAltitude();
+        // State가 있으면 상대 고도 사용, 없으면 절대 고도 사용
+        if (state) {
+            packet.altitude = state->getCurrentAltitude();
+        } else {
+            packet.altitude = bmp->getAltitude();
+        }
         packet.temperature = bmp->getTemperature();
         packet.pressure = bmp->getPressure();
     } else {
@@ -173,8 +189,3 @@ String Packet::formatMissionTime(unsigned long elapsedMillis) {
     int hours = (totalSeconds / 3600) % 24;
     int minutes = (totalSeconds / 60) % 60;
     int seconds = totalSeconds % 60;
-    
-    char timeStr[9];
-    sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
-    return String(timeStr);
-}
