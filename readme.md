@@ -18,9 +18,9 @@
 
 ## 🎯 프로젝트 개요
 
-1062팀은 **2026 CanSat Competition - Paraglider Instrument Delivery** 미션에 참가하며, 본 프로젝트는 **Sensor Subsystem (SSS)** 개발에 집중합니다.
+1062팀은 **2026 CanSat Competition - Paraglider Instrument Delivery** 미션에 참가하며, 본 프로젝트는 **Flyting Software (FSW)** 개발에 집중합니다.
 
-### SSS 핵심 기능
+### FSW 핵심 기능
 
 - ✅ **센서 데이터 수집**: BMP390(기압), BNO085(IMU), GPS
 - ✅ **칼만 필터링**: 고품질 센서 데이터 생성
