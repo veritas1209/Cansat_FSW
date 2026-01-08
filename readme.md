@@ -5,40 +5,40 @@
 
 ### 센서 요구사항 (SN1-SN10)
 
-| 규정 ID | 요구사항 | 구현 상태 |
-|---------|----------|-----------|
-| **SN1** | 기압 센서로 고도 측정 | ✅ BMP390 |
-| **SN2** | 내부 온도 측정 | ✅ BMP390 |
-| **SN3** | 배터리 전압 측정 | ⏳ ADC 구현 필요 |
-| **SN4** | GPS 위치 추적 | ✅ GPS 모듈 |
-| **SN5** | 가속도 및 회전 속도 측정 | ✅ BNO085 |
-| **SN6** | Para-glider 전개 영상 | ❌ Camera System |
-| **SN7** | 지면 하강 영상 | ❌ Camera System |
-| **SN8** | 계란 방출 영상 | ❌ Camera System |
-| **SN9** | 640x480 컬러 영상 | ❌ Camera System |
-| **SN10** | 배터리 전류 측정 | ⏳ 전류 센서 필요 |
+| 규정 ID | 요구사항 |
+|---------|----------|
+| **SN1** | 기압 센서로 고도 측정 |
+| **SN2** | 내부 온도 측정 |
+| **SN3** | 배터리 전압 측정 |
+| **SN4** | GPS 위치 추적 |
+| **SN5** | 가속도 및 회전 속도 측정 |
+| **SN6** | Para-glider 전개 영상 |
+| **SN7** | 지면 하강 영상 |
+| **SN8** | 계란 방출 영상 |
+| **SN9** | 640x480 컬러 영상 |
+| **SN10** | 배터리 전류 측정 |
 
 ### 통신 요구사항 (X1-X5)
 
-| 규정 ID | 요구사항 | 구현 상태 |
-|---------|----------|-----------|
-| **X1** | XBee 2.4GHz/900MHz 사용 | ⏳ 하드웨어 연결 필요 |
-| **X2** | NETID/PANID = 팀 번호 (1062) | ⏳ XBee 설정 필요 |
-| **X3** | 브로드캐스트 모드 금지 | ⏳ 소프트웨어 구현 |
-| **X4** | 1Hz 텔레메트리 전송 | ✅ 구현 완료 |
-| **X5** | 필수 데이터 포함 | ✅ Packet.cpp |
+| 규정 ID | 요구사항 |
+|---------|----------|
+| **X1** | XBee 2.4GHz/900MHz 사용 |
+| **X2** | NETID/PANID = 팀 번호 (1062) |
+| **X3** | 브로드캐스트 모드 금지 |
+| **X4** | 1Hz 텔레메트리 전송 |
+| **X5** | 필수 데이터 포함 |
 
 ### 비행 소프트웨어 요구사항 (F1-F8)
 
-| 규정 ID | 요구사항 | 구현 상태 |
-|---------|----------|-----------|
-| **F1** | 패킷 카운터 유지 (리셋 후에도) | ✅ EEPROM 필요 |
-| **F2** | 미션 시간 유지 (리셋 후에도) | ✅ EEPROM 필요 |
-| **F3** | UTC 시간 설정 (±1초) | ✅ ST 명령 |
-| **F4** | 시뮬레이션 모드 지원 | ⏳ 구현 필요 |
-| **F5** | SIMP 명령으로 기압 대체 | ⏳ 구현 필요 |
-| **F6** | SIM ENABLE + ACTIVATE 필요 | ⏳ 구현 필요 |
-| **F7** | 메커니즘 명령 지원 | ⏳ MEC# 1062팀 CanSat 2026 프로젝트
+| 규정 ID | 요구사항 |
+|---------|----------|
+| **F1** | 패킷 카운터 유지 (리셋 후에도) |
+| **F2** | 미션 시간 유지 (리셋 후에도) |
+| **F3** | UTC 시간 설정 (±1초) |
+| **F4** | 시뮬레이션 모드 지원 |
+| **F5** | SIMP 명령으로 기압 대체 |
+| **F6** | SIM ENABLE + ACTIVATE 필요 |
+| **F7** | 메커니즘 명령 지원 |
 
 > **Teensy 4.1 기반 Sensor Subsystem (SSS)**  
 > 2026 CanSat Competition - Paraglider Instrument Delivery Mission
@@ -427,53 +427,6 @@ sensorManager.updateAll();  // 모든 센서 업데이트
 
 ---
 
-## 🚀 빠른 시작
-
-### 1. 환경 설정
-
-```bash
-# PlatformIO 프로젝트 (권장)
-platformio init --board teensy41
-
-# Arduino IDE
-- Teensyduino 설치
-- 보드: Teensy 4.1
-- USB Type: Serial
-- CPU Speed: 600 MHz
-```
-
-### 2. 라이브러리 설치
-
-```ini
-# platformio.ini
-[env:teensy41]
-platform = teensy
-board = teensy41
-framework = arduino
-lib_deps = 
-    adafruit/Adafruit BMP3XX Library
-    adafruit/Adafruit BNO08x
-    adafruit/Adafruit GPS Library
-```
-
-### 3. 업로드 및 실행
-
-```bash
-# PlatformIO
-pio run -t upload
-
-# Arduino IDE
-- Sketch → Upload
-```
-
-### 4. 시리얼 모니터
-
-```bash
-# 보레이트: 9600
-# 출력: CSV 형식 텔레메트리 데이터 (1Hz)
-```
-
----
 
 ## 🎮 명령어 규격 (대회 규정 준수)
 
@@ -492,11 +445,8 @@ CMD,1062,CX,ON
 
 // 텔레메트리 비활성화  
 CMD,1062,CX,OFF
+
 ```
-**구현 상태**: ⏳ XBee 통신 구현 필요 (용주)
-
----
-
 #### 2. ST - 시간 설정 (규정 3.1.2)
 ```cpp
 // UTC 시간 직접 설정
@@ -505,7 +455,7 @@ CMD,1062,ST,13:35:59
 // GPS 시간 동기화
 CMD,1062,ST,GPS
 ```
-**구현 상태**: ⏳ XBee 명령 수신 구현 필요 (용주)  
+
 **정확도**: ±1초 (규정 F3)
 
 ---
@@ -521,7 +471,7 @@ CMD,1062,SIM,ACTIVATE
 // 시뮬레이션 종료
 CMD,1062,SIM,DISABLE
 ```
-**구현 상태**: ⏳ 구현 필요 (용주)  
+
 **중요**: FRR(Flight Readiness Review) 필수 기능!
 
 ---
@@ -554,7 +504,7 @@ CMD,1062,MEC,SERVO1,ON
 // 서보모터 비활성화
 CMD,1062,MEC,SERVO1,OFF
 ```
-**구현 상태**: ⏳ 구현 필요 (용주, 다른 팀과 협의)  
+
 **용도**: FRR에서 메커니즘 테스트용, 비행 중엔 자동
 
 ---
@@ -666,57 +616,6 @@ Teensy/
 │
 └── platformio.ini            # 프로젝트 설정
 ```
-
-### 새 센서 추가하기
-
-```cpp
-// 1. include/sensors/NewSensor.h 생성
-class NewSensor {
-private:
-    bool initialized;
-public:
-    NewSensor();
-    bool begin();
-    void update();
-    float getData();
-};
-
-// 2. SensorManager에 통합
-void SensorManager::attachNewSensor(NewSensor* sensor);
-bool SensorManager::initNewSensor();
-```
-
-### 상태 로직 수정하기
-
-```cpp
-// State.cpp의 checkXXX 함수 수정
-void State::checkDescentToPayloadRelease() {
-    float releaseAltitude = maxAltitude * 0.80;  // 80% → 원하는 값으로
-    
-    if (currentAltitude <= releaseAltitude && !payloadReleased) {
-        changeState(PAYLOAD_RELEASE);
-        payloadReleased = true;
-        
-        // 추가 동작 (예: 서보모터 제어)
-        // servo.write(90);
-    }
-}
-```
-
-### 칼만 필터 튜닝
-
-```cpp
-// 노이즈가 심한 경우 → R 증가 (센서 덜 신뢰)
-imu.setGyroNoise(0.01, 0.5);  // R: 0.1 → 0.5
-
-// 빠른 변화 추적 필요 → Q 증가 (시스템 변화 반영)
-imu.setGyroNoise(0.05, 0.1);  // Q: 0.01 → 0.05
-
-// 안정적이지만 느린 응답 → Q 감소
-imu.setGyroNoise(0.001, 0.1); // Q: 0.01 → 0.001
-```
-
----
 
 ## 📊 성능 벤치마크
 
