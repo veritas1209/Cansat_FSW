@@ -7,8 +7,6 @@
 #include <Adafruit_BNO08x.h>
 #include "Filter.h"
 
-// INT 핀 사용 안 함 (폴링 모드)
-
 class BNO085 {
 private:
     Adafruit_BNO08x bno08x;
@@ -26,7 +24,7 @@ private:
     float accel_roll_filtered, accel_pitch_filtered, accel_yaw_filtered;
     float gyro_roll_filtered, gyro_pitch_filtered, gyro_yaw_filtered;
     
-    // IMU 칼만 필터 (내부에서 관리)
+    // IMU 칼만 필터
     IMUFilter imuFilter;
     bool filterEnabled;
     
@@ -44,7 +42,7 @@ private:
 public:
     BNO085();
     
-    // 초기화 (Wire1 사용 - 핀 17/16)
+    // 초기화 (Wire 사용 - I2C 기본 핀)
     bool begin();
     
     // 칼만 필터 활성화 (선택적)
@@ -60,7 +58,7 @@ public:
     void setGyroNoise(float process_noise, float measurement_noise);
     void setAccelNoise(float process_noise, float measurement_noise);
     
-    // 센서 데이터 읽기 (폴링 방식) + 필터링
+    // 센서 데이터 읽기
     void update();
     
     // 가속도 데이터 접근 (m/s²) - 원본 XYZ

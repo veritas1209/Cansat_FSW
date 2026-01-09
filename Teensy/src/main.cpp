@@ -28,23 +28,31 @@ void setup() {
     delay(2000);
     
     Serial.println("=== Teensy 4.1 CanSat FSW ===");
-    Serial.println();
+    Serial.println("시스템 시작 중...");
+    Serial.flush();
+    
+    // Watchdog: 10초 안에 초기화 완료되지 않으면 강제 진행
+    unsigned long setupStart = millis();
+    const unsigned long setupTimeout = 10000;  // 10초
     
     // 센서 매니저에 센서 연결
     sensorManager.attachSensors(&bmp, &imu, &gps);
     
-    // 모든 센서 초기화
+    // 모든 센서 초기화 (개별적으로 실패해도 계속 진행)
     sensorManager.initializeAll();
     
-    // BNO085 칼만 필터 활성화
-    sensorManager.enableIMUFilter(
-        0.01,  // 자이로 프로세스 노이즈
-        0.1,   // 자이로 측정 노이즈
-        0.01,  // 가속도 프로세스 노이즈
-        0.5    // 가속도 측정 노이즈
-    );
+    // 타임아웃 체크
+    if (millis() - setupStart > setupTimeout) {
+        Serial.println("⚠ 초기화 타임아웃! 강제로 계속 진행합니다.");
+        Serial.flush();
+    }
     
-    // 오디오 부저 초기화
+    // BNO085 칼만 필터 활성화 (초기화 성공했을 때만)
+    if (sensorManager.isIMUInitialized()) {
+        sensorManager.enableIMUFilter(0.01, 0.1, 0.01, 0.5);
+    }
+    
+    // 나머지 초기화...
     Serial.println("[ 오디오 부저 초기화 ]");
     audio.begin();
     Serial.println();
