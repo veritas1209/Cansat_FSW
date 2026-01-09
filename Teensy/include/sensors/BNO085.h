@@ -38,11 +38,14 @@ private:
     
     // 가속도를 RPY 방향으로 변환
     void transformAccelToRPY();
+    
+    // 센서 리포트 재활성화 (리셋 시)
+    void setReports();
 
 public:
     BNO085();
     
-    // 초기화 (Wire 사용 - I2C 기본 핀)
+    // 초기화 (Wire 사용 - SCL=19, SDA=18 고정)
     bool begin();
     
     // 칼만 필터 활성화 (선택적)
