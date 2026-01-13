@@ -204,6 +204,8 @@ void State::checkDescentToPayloadRelease() {
     }
 }
 
+// TODO : 페이로드 컨테이너 릴리즈(모스펫 신호), 카메라1,2 녹화 시작
+// WARNING: 이 단계에서는 페이로드와 컨테이너가 분리되는 단계이므로, 함수명과 로직 변경
 void State::checkPayloadReleaseToProbeRelease() {
     // 계란 방출: 지면으로부터 2m ± 0.5m
     float targetAltitude = thresholds.probeReleaseAltitude;

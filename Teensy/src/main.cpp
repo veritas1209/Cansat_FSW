@@ -7,15 +7,21 @@
 #include "SensorManager.h"
 #include "Packet.h"
 #include "State.h"  // State 모듈 추가
+#include "Teensy_Camera.h"
+#include "XBee_Module.h"
 
 // 센서 객체 생성
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
+XBee xbee;
 Audio audio;
 
 // 센서 매니저 생성
 SensorManager sensorManager;
+
+// 카메라 객체 생성
+Teensy_Camera camera;
 
 // 패킷 객체 생성
 Packet telemetry;
@@ -36,7 +42,7 @@ void setup() {
     const unsigned long setupTimeout = 10000;  // 10초
     
     // 센서 매니저에 센서 연결
-    sensorManager.attachSensors(&bmp, &imu, &gps);
+    sensorManager.attachSensors(&bmp, &imu, &gps, &xbee);
     
     // 모든 센서 초기화 (개별적으로 실패해도 계속 진행)
     sensorManager.initializeAll();
@@ -79,6 +85,7 @@ void setup() {
     Serial.println("  STATUS - State 상태 출력");
     Serial.println("  BEEP   - 부저 테스트 (연속 비프)");
     Serial.println("  STOP   - 부저 중지");
+    Serial.println("  SEND_CAMERA   - 카메라 데이터 전송 테스트");
     Serial.println();
     
     delay(1000);
@@ -112,8 +119,10 @@ void loop() {
         }
     }
     
+    // TODO : xbee나 serial 명령어(ex: CMD,1062,CX,ON)을 문자열로 받은 뒤 CX와 ON만 분리하여 조건문 처리
     // 임시 테스트용: Serial로 명령어 입력 받기
     if (Serial.available()) {
+        //String command = xbee.processCommands();
         String command = Serial.readStringUntil('\n');
         command.trim();
         
@@ -148,6 +157,12 @@ void loop() {
         else if (command == "STOP") {
             Serial.println(">>> 부저 중지!");
             audio.stopBeep();
+        }
+        else if (command == "SEND_CAMERA") {
+            Serial.println(">>> 카메라 데이터 전송 테스트!");
+            camera.sendCommand();
+            camera.receiveData();
+
         }
         else {
             Serial.println(">>> 알 수 없는 명령어");

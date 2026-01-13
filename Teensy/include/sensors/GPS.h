@@ -5,7 +5,7 @@
 #include <Arduino.h>
 #include <Adafruit_GPS.h>
 
-#define GPSSerial Serial1
+#define GPSSerial Serial6
 
 class GPS {
 private:

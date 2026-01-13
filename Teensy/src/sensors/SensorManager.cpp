@@ -9,13 +9,15 @@ SensorManager::SensorManager() {
     bmp_initialized = false;
     imu_initialized = false;
     gps_initialized = false;
+    xbee_initialized = false;
 }
 
-void SensorManager::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule) {
+void SensorManager::attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule, XBee* xbee) {
     bmp = bmp390;
     imu = bno085;
     gps = gpsModule;
-    
+    xbee = xbee;
+
     Serial.println("SensorManager - 센서 연결 완료");
     Serial.flush();
 }
@@ -41,6 +43,12 @@ void SensorManager::initializeAll() {
     Serial.println("[ 3/3 ] BNO085 초기화...");
     Serial.flush();
     imu_initialized = initBNO085();
+    delay(100);
+    
+    // XBee 초기화
+    Serial.println("[ 4/4 ] XBee 초기화...");
+    Serial.flush();
+    xbee_initialized = initXBee();
     delay(100);
     
     Serial.println();
@@ -173,6 +181,9 @@ void SensorManager::printInitStatus() {
     
     Serial.print("  GPS: ");
     Serial.println(gps_initialized ? "OK ✓" : "FAIL ✗");
+
+    Serial.print("  XBee: ");
+    Serial.println(xbee_initialized ? "OK ✓" : "FAIL ✗");
     
     Serial.println("==============================");
     Serial.println();
@@ -190,6 +201,9 @@ void SensorManager::printInitStatus() {
         }
         if (!gps_initialized) {
             Serial.println("  - GPS 없이 계속 진행 (위치 데이터 없음)");
+        }
+        if (!xbee_initialized) {
+            Serial.println("  - XBee 없이 계속 진행 (무선 통신 불가)");
         }
     }
     Serial.println();

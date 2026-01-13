@@ -3,12 +3,16 @@
 
 #include <Arduino.h>
 
+#define XBEE Serial2
+
 class XBee {
+private:
+    bool initialized;
+
 public:
-    void xbeeInit();
+    bool xbeeInit();
     void xbeeTransmit(String data);
-    bool xbeeAvailable();
-    String xbeeReceive();
+    String processCommands();
 };
     
 
