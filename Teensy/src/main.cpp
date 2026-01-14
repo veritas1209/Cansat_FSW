@@ -8,13 +8,13 @@
 #include "Packet.h"
 #include "State.h"  // State 모듈 추가
 #include "Teensy_Camera.h"
-#include "XBee_Module.h"
+//#include "XBee_Module.h"
 
 // 센서 객체 생성
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
-XBee xbee;
+//XBee xbee;
 Audio audio;
 
 // 센서 매니저 생성
@@ -42,7 +42,7 @@ void setup() {
     const unsigned long setupTimeout = 10000;  // 10초
     
     // 센서 매니저에 센서 연결
-    sensorManager.attachSensors(&bmp, &imu, &gps, &xbee);
+    sensorManager.attachSensors(&bmp, &imu, &gps);
     
     // 모든 센서 초기화 (개별적으로 실패해도 계속 진행)
     sensorManager.initializeAll();
@@ -68,6 +68,8 @@ void setup() {
     flightState.attachSensors(&bmp, &imu, &gps);
     flightState.begin();
     Serial.println();
+
+    camera.init();
     
     // 패킷 시스템에 센서 및 State 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
@@ -85,7 +87,8 @@ void setup() {
     Serial.println("  STATUS - State 상태 출력");
     Serial.println("  BEEP   - 부저 테스트 (연속 비프)");
     Serial.println("  STOP   - 부저 중지");
-    Serial.println("  SEND_CAMERA   - 카메라 데이터 전송 테스트");
+    Serial.println("  START_RECORD   - 카메라 녹화 시작");
+    Serial.println("  STOP_RECORD    - 카메라 녹화 종료");
     Serial.println();
     
     delay(1000);
@@ -158,15 +161,20 @@ void loop() {
             Serial.println(">>> 부저 중지!");
             audio.stopBeep();
         }
-        else if (command == "SEND_CAMERA") {
+        else if (command == "START_RECORD") {
             Serial.println(">>> 카메라 데이터 전송 테스트!");
-            camera.sendCommand();
-            camera.receiveData();
+            camera.sendCommand('1');
 
+        }
+        else if (command == "STOP_RECORD") {
+            Serial.println(">>> 카메라 데이터 전송 테스트!");
+            camera.sendCommand('0');
         }
         else {
             Serial.println(">>> 알 수 없는 명령어");
             telemetry.setCommandEcho("UNKNOWN");
         }
     }
+
+    camera.receiveData(); // 카메라 테스트할려면 이 함수 무조건 조건문 밖에 빼둬야 함
 }

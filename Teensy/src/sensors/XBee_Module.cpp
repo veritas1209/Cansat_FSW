@@ -47,6 +47,6 @@ String XBee::processCommands() {
 
     command.trim();
 
-    
+    return command;
 }
 
