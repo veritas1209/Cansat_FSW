@@ -42,7 +42,7 @@ float BMP390::getTemperature() {
 
 float BMP390::getPressure() {
     if (!initialized) return 0.0;
-    return bmp.pressure / 100.0; // Pa to hPa
+    return bmp.pressure / 100.0;
 }
 
 float BMP390::getAltitude() {
@@ -55,6 +55,7 @@ float BMP390::getRelativeAltitude() {
     return getAltitude() - baseAltitude;
 }
 
+// TODO : 표준 해수면 기압값이 아닌 현재 기압 혹은 고도를 기준으로 계산
 void BMP390::calibrateAltitude(int samples) {
     if (!initialized) return;
     

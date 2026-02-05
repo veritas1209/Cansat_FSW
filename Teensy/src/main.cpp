@@ -4,18 +4,23 @@
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
 #include "sensors/Audio.h"
+#include "sensors/SDCARD.h"
 #include "SensorManager.h"
+#include "sensors/XBee.h"
 #include "Packet.h"
-#include "State.h"  // State 모듈 추가
+#include "State.h"
 #include "Teensy_Camera.h"
-//#include "XBee_Module.h"
+#include "Mode.h"
 
 // 센서 객체 생성
 BMP390 bmp;
 BNO085 imu;
 GPS gps;
-//XBee xbee;
+XBee xbee;
 Audio audio;
+SDCard sdcard;
+
+Mode mode;
 
 // 센서 매니저 생성
 SensorManager sensorManager;
@@ -28,6 +33,10 @@ Packet telemetry;
 
 // State 객체 생성
 State flightState;
+
+float currentPressurePa = 0.0; // 현재 압력 저장 변수
+
+float groundPressurePa = 0.0; // 지면 기준 압력 저장 변수
 
 void setup() {
     Serial.begin(9600);
@@ -42,7 +51,7 @@ void setup() {
     const unsigned long setupTimeout = 10000;  // 10초
     
     // 센서 매니저에 센서 연결
-    sensorManager.attachSensors(&bmp, &imu, &gps);
+    sensorManager.attachSensors(&bmp, &imu, &gps, &xbee);
     
     // 모든 센서 초기화 (개별적으로 실패해도 계속 진행)
     sensorManager.initializeAll();
@@ -70,6 +79,13 @@ void setup() {
     Serial.println();
 
     camera.init();
+
+    // 초기 지면 기압 설정 (부팅 시 센서값 기준)
+    if (bmp.isInitialized()) {
+        groundPressurePa = bmp.getPressure() * 100.0; // hPa -> Pa 변환
+    }
+    
+    telemetry.setMode('F');
     
     // 패킷 시스템에 센서 및 State 연결
     telemetry.attachSensors(&bmp, &imu, &gps);
@@ -102,6 +118,20 @@ void loop() {
     
     // State 업데이트 (비행 상태 자동 전환)
     flightState.update();
+
+    if (xbee.receiveCommand())
+    {
+        Serial.println("XBee 명령어 수신됨:");
+        for (int i = 0; i < 4; i++) {
+            Serial.print("  cmdParts[");
+            Serial.print(i);
+            Serial.print("]: ");
+            Serial.println(xbee.cmdParts[i]);
+    }
+    
+
+    Serial.println("From XBee: ");
+    Serial.println(xbee.cmdParts[2]);
     
     // 오디오 부저 업데이트 (연속 비프용)
     audio.update();
@@ -125,9 +155,7 @@ void loop() {
     // TODO : xbee나 serial 명령어(ex: CMD,1062,CX,ON)을 문자열로 받은 뒤 CX와 ON만 분리하여 조건문 처리
     // 임시 테스트용: Serial로 명령어 입력 받기
     if (Serial.available()) {
-        //String command = xbee.processCommands();
         String command = Serial.readStringUntil('\n');
-        command.trim();
         
         Serial.print("수신된 명령어: ");
         Serial.println(command);

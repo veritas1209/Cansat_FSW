@@ -6,24 +6,25 @@
 #include "sensors/BMP390.h"
 #include "sensors/BNO085.h"
 #include "sensors/GPS.h"
-//#include "XBee_Module.h"
+#include "XBee.h"
 
 class SensorManager {
 private:
     BMP390* bmp;
     BNO085* imu;
     GPS* gps;
+    XBee* xbee;
     
     bool bmp_initialized;
     bool imu_initialized;
     bool gps_initialized;
-    //bool xbee_initialized;
+    bool xbee_initialized;
 
 public:
     SensorManager();
     
     // 센서 객체 연결
-    void attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule);
+    void attachSensors(BMP390* bmp390, BNO085* bno085, GPS* gpsModule, XBee* xbeeModule);
     
     // 모든 센서 초기화
     void initializeAll();
@@ -32,7 +33,7 @@ public:
     bool initBMP390();
     bool initBNO085();
     bool initGPS();
-    //bool initXBee();
+    bool initXBee();
     
     // BNO085 칼만 필터 활성화
     void enableIMUFilter(float gyro_process_noise = 0.01, 
