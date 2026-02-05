@@ -29,18 +29,6 @@
 #define CSV_FILENAME "Flight_1062.csv"
 #define STANDARD_SEA_LEVEL_PRESSURE_HPA 1013.25
 
-// 핀 정의
-const int BATTERY_VOLTAGE_PIN = A2;  // 배터리 전압용 ADC 입력 핀 (16Pin)
-
-// 전압 분배기 구성
-const float REFERENCE_VOLTAGE = 3.3;     // Teensy 4.1 기준 전압 (3.3V)
-const int ADC_RESOLUTION = 1023;         // 10비트 ADC 최대값
-const float R1 = 10.0;                   // R1 저항 (10kΩ)
-const float R2 = 36.0;                   // R2 저항 (36kΩ)
-
-// 물리 상수
-//const float RAD_TO_DEG = 180.0 / 3.14159265358;  // 라디안에서 도(°)로 변환
-
 // ---------------------------------------------------
 // 전역 객체
 // ---------------------------------------------------
@@ -48,7 +36,7 @@ const float R2 = 36.0;                   // R2 저항 (36kΩ)
 // 센서 객체
 Adafruit_GPS GPS(&GPSSerial);       // GPS 객체
 Adafruit_BNO08x bno08x;             // BNO085 객체
-Adafruit_BMP3XX bmp;                // BMP388 객체
+Adafruit_BMP3XX bmp;                // BMP390 객체
 sh2_SensorValue_t sensorValue;      // BNO085 센서 데이터 객체
 
 // SD 카드 파일 객체
@@ -80,7 +68,7 @@ bool simEnableReceived = false;          // SIM "ENABLE" 명령 플래그
 bool simActivateReceived = false;        // SIM "ACTIVATE" 명령 플래그
 bool isCalibrated = false;               // CAL 명령 수신 플래그
 bool isLaunched = false;                 // 발사 상태
-bool firstValidReadingDiscarded = false; // BMP388 안정화를 위한 플래그
+bool firstValidReadingDiscarded = false; // BMP390 안정화를 위한 플래그
 FlightState currentState = LAUNCH_PAD;   // 현재 비행 상태
 
 // 미션 시간 (HH, MM, SS)
@@ -91,14 +79,13 @@ int packetCount = 0;             // 전송된 패킷 수
 char flightMode = 'F';           // 운용 모드 ('F' = 비행, 'S' = 시뮬레이션)
 
 // 센서 데이터 변수
-float altitude = 0, temperature = 0, pressure = 0;   // BMP388: 고도(m), 온도(°C), 기압(kPa)
+float altitude = 0, temperature = 0, pressure = 0;   // BMP390: 고도(m), 온도(°C), 기압(kPa)
 float batteryVoltage = 0;                            // 배터리 전압(V)
 float gpsAltitude = 0, gpsLatitude = 0, gpsLongitude = 0; // GPS 데이터
 byte gpsSatellites = 0;                              // GPS 위성 수
 float gyroR = 0, gyroP = 0, gyroY = 0;              // 자이로스코프(BNO085) - 도/초
 float accelX = 0, accelY = 0, accelZ = 0;           // 가속도계(BNO085) - m/s²
 float magR = 0, magP = 0, magY = 0;                 // 자력계(BNO085) - 가우스
-float propellerRate = 0;                             // 프로펠러 회전 속도
 
 // 명령어 변수
 String cmdBuffer;                  // 수신된 명령어 버퍼
@@ -109,7 +96,7 @@ String cmdParts[4];                // 쉼표로 분할된 명령어 부분
 float simPressure = 0;             // 시뮬레이션 모드 기압(hPa)
 float groundPressure = 0.0;        // 기준 지표 기압(hPa)
 float currentPressure = 0.0;       // 현재 기압(hPa)
-float maxAltitude = 0;             // 최대 기록 고도
+float maxAltitude = 0;             // 최대 고도
 float prevAltitude = 0;            // 이전 고도 측정값
 
 // 타이밍 변수
@@ -123,7 +110,7 @@ String telemetryCSV;               // CSV 형식 텔레메트리 데이터 문�
 // ---------------------------------------------------
 
 /**
- * 모든 센서 초기화: SD 카드, GPS, BNO08x, BMP388
+ * 모든 센서 초기화: SD 카드, GPS, BNO08x, BMP390
  * @return 초기화 성공 시 true, 실패 시 false
  */
 bool initSensors() {
@@ -161,10 +148,10 @@ bool initSensors() {
       if (DEBUG) Serial.println("유효한 BMP3 센서를 찾을 수 없습니다. 배선을 확인하세요!");
       success = false;
     } else {
-      configureBMP388();
+      configureBMP390();
     }
   } else {
-    configureBMP388();
+    configureBMP390();
   }
   delay(300);
   
@@ -181,9 +168,9 @@ bool initSensors() {
 }
 
 /**
- * BMP388 센서 설정 구성
+ * BMP390 센서 설정 구성
  */
-void configureBMP388() {
+void configureBMP390() {
   if (DEBUG) Serial.println("BMP390 초기화 성공!");
   bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
   bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
@@ -207,12 +194,8 @@ void configureBNO085() {
  * @return 성공 시 true, 오류 시 false
  */
 bool updateSensorData() {
-  // 배터리 전압 읽기
-  int adcValue = analogRead(BATTERY_VOLTAGE_PIN);
-  float measuredVoltage = (adcValue / float(ADC_RESOLUTION)) * REFERENCE_VOLTAGE;
-  batteryVoltage = measuredVoltage * ((R1 + R2) / R2);
   
-  // 일반 모드에서는 실제 센서에서 읽기
+  // 비행 모드에서는 실제 센서에서 읽기
   if (!simModeEnabled) {
     // BMP390 읽기
     if (!bmp.performReading()) {
@@ -223,7 +206,7 @@ bool updateSensorData() {
     // 안정화를 위해 첫 번째 읽기 무시
     if (!firstValidReadingDiscarded) {
       firstValidReadingDiscarded = true;
-      if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP388 읽기 무시 중");
+      if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
       delay(1000);
       return true;  // 다음 주기에 다시 읽을 것이므로 일찍 반환
     } 
@@ -298,12 +281,6 @@ void readIMUData() {
         gyroR = sensorValue.un.gyroscope.x * RAD_TO_DEG;
         gyroP = sensorValue.un.gyroscope.y * RAD_TO_DEG;
         gyroY = sensorValue.un.gyroscope.z * RAD_TO_DEG;
-        break;
-      case SH2_MAGNETIC_FIELD_CALIBRATED:
-        // μT에서 가우스로 변환 (1 μT = 0.01 가우스)
-        magR = sensorValue.un.magneticField.x * 0.01;
-        magP = sensorValue.un.magneticField.y * 0.01;
-        magY = sensorValue.un.magneticField.z * 0.01;
         break;
     }
   }
@@ -405,10 +382,6 @@ String generateTelemetry() {
     + String(accelX, 2) + ","                            // 가속도 X(m/s²)
     + String(accelY, 2) + ","                            // 가속도 Y(m/s²)
     + String(accelZ, 2) + ","                            // 가속도 Z(m/s²)
-    + String(magR, 2) + ","                              // 자기장 롤(가우스)
-    + String(magP, 2) + ","                              // 자기장 피치(가우스)
-    + String(magY, 2) + ","                              // 자기장 요(가우스)
-    + String(propellerRate, 2) + ","                     // 프로펠러 회전 속도
     + String(gpsTimeBuf) + ","                           // GPS 시간
     + String(GPS.altitude, 1) + ","                      // GPS 고도 (0.1m resolution)
     + String(convertNMEAtoDecimalDegrees(GPS.latitude), 4) + ","   // GPS 위도 (변환됨)
@@ -600,11 +573,11 @@ void executeSIMPCommand() {
  */
 void executeMECCommand() {
   if (cmdParts[3].equals("ON")) {
-    if (DEBUG) Serial.println("서보 모터 활성화!");
+    if (DEBUG) Serial.println("번와이어 활성화!");
     
   } else {
-    if (DEBUG) Serial.println("서보 모터 비활성화!");
-    // 여기에 서보 모터 비활성화 코드 추가
+    if (DEBUG) Serial.println("번와이어 비활성화!");
+    // 여기에 번와이어 비활성화 코드 추가
   }
   cmdEcho = cmdParts[2] + cmdParts[3];
 }
