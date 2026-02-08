@@ -1,18 +1,8 @@
-/**
- * CanSat_3167_FSW
- * 
- * 이 코드는 Teensy 4.1과 여러 센서를 사용하는 텔레메트리 시스템을 구현합니다:
- * - BMP390: 기압 및 온도 센서
- * - BNO085: IMU (가속도계, 자이로스코프, 자력계)
- * - Adafruit Ultimate GPS Breakout v3: 위치 데이터
- * 
- * 데이터는 XBee를 통해 전송되고 SD 카드에도 기록됩니다.
- */
-
 #include <Arduino.h>
 #include <Adafruit_GPS.h>
 #include <Adafruit_BNO08x.h>
 #include "Adafruit_BMP3XX.h"
+#include <Adafruit_INA260.h>
 #include <SPI.h>
 #include <SD.h>
 #include "Wire.h"
@@ -38,6 +28,7 @@ Adafruit_GPS GPS(&GPSSerial);       // GPS 객체
 Adafruit_BNO08x bno08x;             // BNO085 객체
 Adafruit_BMP3XX bmp;                // BMP390 객체
 sh2_SensorValue_t sensorValue;      // BNO085 센서 데이터 객체
+Adafruit_INA260 ina260;             // INA260 객체
 
 // SD 카드 파일 객체
 File packetFile;
@@ -52,13 +43,20 @@ enum FlightState {
   ASCENT,            // 상승
   APOGEE,            // 최고점 
   DESCENT,           // 하강
-  PROBE_RELEASE,     // 프로브 방출
+  PAYLOAD_RELEASE,   // 페이로드 방출
+  PROBE_RELEASE,     // 프로브(계란) 방출
   LANDED             // 착륙
 };
 
 // 비행 상태 문자열 (열거형 순서와 일치해야 함)
 const String STATE_STRINGS[] = {
-  "LAUNCH_PAD", "ASCENT", "APOGEE", "DESCENT", "PROBE_RELEASE", "LANDED"
+  "LAUNCH_PAD",
+  "ASCENT",
+  "APOGEE",
+  "DESCENT",
+  "PAYLOAD_RELEASE",
+  "PROBE_RELEASE",
+  "LANDED"
 };
 
 // 시스템 상태 변수
@@ -81,11 +79,11 @@ char flightMode = 'F';           // 운용 모드 ('F' = 비행, 'S' = 시뮬레
 // 센서 데이터 변수
 float altitude = 0, temperature = 0, pressure = 0;   // BMP390: 고도(m), 온도(°C), 기압(kPa)
 float batteryVoltage = 0;                            // 배터리 전압(V)
+float batteryCurrent = 0;                            // 배터리 전류(A)
 float gpsAltitude = 0, gpsLatitude = 0, gpsLongitude = 0; // GPS 데이터
 byte gpsSatellites = 0;                              // GPS 위성 수
 float gyroR = 0, gyroP = 0, gyroY = 0;              // 자이로스코프(BNO085) - 도/초
 float accelX = 0, accelY = 0, accelZ = 0;           // 가속도계(BNO085) - m/s²
-float magR = 0, magP = 0, magY = 0;                 // 자력계(BNO085) - 가우스
 
 // 명령어 변수
 String cmdBuffer;                  // 수신된 명령어 버퍼
@@ -104,6 +102,32 @@ unsigned long previousMillis = 0;  // 시간 측정용
 
 // 텔레메트리 문자열
 String telemetryCSV;               // CSV 형식 텔레메트리 데이터 문자열
+
+// ==========================================
+// 함수 원형 선언 (Forward Declarations)
+// ==========================================
+void configureBMP390();
+void configureBNO085();
+void updatePressureAndAltitude();
+void readIMUData();
+void readGPSData();
+bool calibratePressure();
+void resetParameters();
+void parseCommand(String commandString);
+void executeCXCommand();
+void executeSTCommand();
+void executeSIMCommand();
+void executeSIMPCommand();
+void executeMECCommand();
+String generateTelemetry();
+void updateMissionTime();
+bool writeTelemetryToSD();
+void handleTelemetryTransmission();
+void updateFlightState();
+void processCommands();
+bool initSensors();
+bool updateSensorData();
+float convertNMEAtoDecimalDegrees(float nmeaCoord);
 
 // ---------------------------------------------------
 // 센서 함수
@@ -162,6 +186,14 @@ bool initSensors() {
   } else {
     configureBNO085();
   }
+
+  // INA260(전류 및 전압 센서) 초기화
+  if (!ina260.begin()) {
+    if (DEBUG) Serial.println("유효한 INA260 센서를 찾을 수 없습니다. 배선을 확인하세요!");
+    success = false;
+  } else {
+    configureINA260();
+  }
   
   delay(1000);  // 센서 안정화 대기
   return success;
@@ -185,8 +217,15 @@ void configureBNO085() {
   if (DEBUG) Serial.println("BNO085 초기화 성공!");
   bno08x.enableReport(SH2_ACCELEROMETER);
   bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED);
-  bno08x.enableReport(SH2_MAGNETIC_FIELD_CALIBRATED);
   bno08x.enableReport(SH2_ROTATION_VECTOR);
+}
+
+/** 
+ * INA260 센서 설정 구성
+ */
+void configureINA260() {
+  if (DEBUG) Serial.println("INA260 초기화 성공!");
+  ina260.setMode(INA260_MODE_CONTINUOUS); // 연속 측정 모드
 }
 
 /**
@@ -220,6 +259,9 @@ bool updateSensorData() {
   
   // BNO085 IMU 데이터 읽기
   readIMUData();
+
+  // INA260 전압 및 전류 읽기
+  readVoltageAndCurrent();
   
   // GPS 데이터 읽기
   readGPSData();
@@ -284,6 +326,12 @@ void readIMUData() {
         break;
     }
   }
+}
+
+void readVoltageAndCurrent() {
+  // INA260 전압 및 전류 읽기
+  batteryVoltage = ina260.readBusVoltage() / 1000.0;  // V (INA260은 mV 단위로 반환)
+  batteryCurrent = ina260.readCurrent() / 1000.0;     // A (INA260은 mA 단위로 반환)
 }
 
 /**
@@ -367,7 +415,8 @@ String generateTelemetry() {
   char gpsTimeBuf[12];
   sprintf(gpsTimeBuf, "%02d:%02d:%02d", GPS.hour, GPS.minute, GPS.seconds);
   
- String csvData = String(TEAM_ID) + ","                 // 팀 ID
+ String csvData = 
+    String(TEAM_ID) + ","                                // 팀 ID
     + String(missionTimeBuf) + ","                       // 미션 시간(HH:MM:SS)
     + String(packetCount) + ","                          // 패킷 번호
     + String(flightMode) + ","                           // 모드(F 또는 S)
@@ -376,6 +425,7 @@ String generateTelemetry() {
     + String(temperature, 2) + ","                       // 온도(°C)
     + String(pressure, 2) + ","                          // 기압(kPa)
     + String(batteryVoltage, 2) + ","                    // 배터리 전압(V)
+    + String(batteryCurrent, 2) + ","                    // 배터리 전류(A)
     + String(gyroR, 2) + ","                             // 자이로 롤(도/초)
     + String(gyroP, 2) + ","                             // 자이로 피치(도/초)
     + String(gyroY, 2) + ","                             // 자이로 요(도/초)
@@ -674,11 +724,20 @@ void updateFlightState() {
       break;
 
     case DESCENT:
-      // 최대 고도의 75%에서 PROBE_RELEASE로 전환
-      if (altitude <= maxAltitude * 0.75) {
+      // 최대 고도의 80%에서 PROBE_RELEASE로 전환
+      if (altitude <= maxAltitude * 0.80) {
         currentState = PROBE_RELEASE;
         if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
-        // 여기에 오토-자이로 시스템 배치 코드 추가
+        // TODO : 여기에 컨테이너-페이로드 분리 시스템 코드 추가
+      }
+      break;
+
+    case PAYLOAD_RELEASE:
+      // 2.3m 미만일 때 PROBE_RELEASE로 전환
+      if (altitude <= 2 || altitude < 2.3) {
+        currentState = PROBE_RELEASE;
+        if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
+        // TODO : 여기에 계란 방출 시스템 코드 추가
       }
       break;
 
@@ -691,7 +750,6 @@ void updateFlightState() {
       break;
 
     case LANDED:
-      // 여기에 착륙 상태 코드 추가
       break;
   }
   
