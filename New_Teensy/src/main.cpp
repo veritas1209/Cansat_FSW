@@ -68,6 +68,8 @@ bool isCalibrated = false;               // CAL 명령 수신 플래그
 bool isLaunched = false;                 // 발사 상태
 bool firstValidReadingDiscarded = false; // BMP390 안정화를 위한 플래그
 FlightState currentState = LAUNCH_PAD;   // 현재 비행 상태
+unsigned long lastSensorUpdate = 0;
+const unsigned long SENSOR_INTERVAL = 20; // 20ms = 50Hz 주기
 
 // 미션 시간 (HH, MM, SS)
 byte missionTime[3] = {0, };     // 미션 시간
@@ -543,7 +545,6 @@ void parseCommand(String commandString) {
 void executeCXCommand() {
   if (cmdParts[3].equals("ON")) {
     telemetryEnabled = true;
-    initSensors();  // 텔레메트리가 활성화되면 센서 초기화
   } else if (cmdParts[3].equals("OFF")) {
     telemetryEnabled = false;
     isCalibrated = false;
@@ -601,7 +602,7 @@ void executeSIMCommand() {
   if (simEnableReceived && simActivateReceived) {
     simModeEnabled = true;
     flightMode = 'S';
-    if (DEBUG) Serial.println("시뮬레이션 모드 완전히 활성화됨");
+    if (DEBUG) Serial.println("시뮬레이션 모드 활성화됨");
   }
 }
 
@@ -630,6 +631,11 @@ void executeMECCommand() {
     // 여기에 번와이어 비활성화 코드 추가
   }
   cmdEcho = cmdParts[2] + cmdParts[3];
+}
+
+// TODO : 패러글라이더 제어 함수 구현
+void controlParaglider() {
+
 }
 
 /**
@@ -743,13 +749,14 @@ void updateFlightState() {
 
     case PROBE_RELEASE:
       // 10m 미만일 때 LANDED로 전환
-      if (altitude < 10) {
+      if (altitude < 1) {
         currentState = LANDED;
         if (DEBUG) Serial.println("상태 전환: LANDED (착륙)");
       }
       break;
 
     case LANDED:
+      
       break;
   }
   
@@ -784,6 +791,8 @@ void setup() {
   // 시리얼 통신 초기화
   Serial.begin(9600);
   XBEE.begin(9600);
+
+  initSensors();  // 센서 초기화
   
   if (DEBUG) Serial.println("비행 텔레메트리 시스템 시작");
 }
@@ -791,11 +800,29 @@ void setup() {
 void loop() {
   // 수신된 명령어 처리
   processCommands();
+
+  // 센서 데이터 업데이트 (20ms 간격)
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastSensorUpdate >= SENSOR_INTERVAL) {
+    lastSensorUpdate = currentMillis;
+    
+    // 센서값 읽기
+    updateSensorData();
+    
+    // 보정된 상태라면, 읽은 센서값을 바탕으로 비행 상태(State) 판단
+    if (isCalibrated) {
+      updateFlightState();
+    }
+
+    // PAYLOAD_RELEASE(낙하산 분리 후) 또는 PROBE_RELEASE(계란 투하) 상태일 때만 작동
+    if (currentState == PAYLOAD_RELEASE || currentState == PROBE_RELEASE) {
+      // TODO : 계란이 방출된 이후에 패러글라이더 제어를 안할테니 계란 방출 후에 페이로드가 더 이상 앞으로 가지않게 제어하는 코드도 필요해보임
+      controlParaglider(); // 목표 좌표로 서보모터 제어하는 함수
+    }
+  }
   
   // 텔레메트리가 활성화된 경우에만 다른 작업 진행
   if (telemetryEnabled) {
-    // 센서 데이터 업데이트
-    updateSensorData();
     
     // 첫번째 값을 무시한 상태일 때 패킷 송신
     if (firstValidReadingDiscarded) {
