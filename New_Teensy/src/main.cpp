@@ -110,8 +110,10 @@ String telemetryCSV;               // CSV 형식 텔레메트리 데이터 문�
 // ==========================================
 void configureBMP390();
 void configureBNO085();
+void configureINA260();
 void updatePressureAndAltitude();
 void readIMUData();
+void readVoltageAndCurrent();
 void readGPSData();
 bool calibratePressure();
 void resetParameters();
