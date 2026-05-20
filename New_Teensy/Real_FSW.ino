@@ -65,12 +65,12 @@ bool simModeEnabled = false;             // 시뮬레이션 모드 상태
 bool simEnableReceived = false;          // SIM "ENABLE" 명령 플래그
 bool simActivateReceived = false;        // SIM "ACTIVATE" 명령 플래그
 bool isCalibrated = false;               // CAL 명령 수신 플래그
-bool isLaunched = false;                 // 발사 상태
 bool firstValidReadingDiscarded = false; // BMP390 안정화를 위한 플래그
 FlightState currentState = LAUNCH_PAD;   // 현재 비행 상태
 unsigned long lastSensorUpdate = 0;
 const unsigned long SENSOR_INTERVAL = 20; // 20ms = 50Hz 주기
-unsigned long firstReadingTime = 0;
+byte descendingCount = 0;                // ASCENT→APOGEE 연속 하강 카운터 (노이즈 필터)
+const byte DESCENT_CONFIRM_COUNT = 3;    // APOGEE 확정에 필요한 연속 하강 샘플 수
 
 // 미션 시간 (HH, MM, SS)
 byte missionTime[3] = {0, };     // 미션 시간
@@ -89,9 +89,10 @@ float gyroR = 0, gyroP = 0, gyroY = 0;              // 자이로스코프(BNO085
 float accelX = 0, accelY = 0, accelZ = 0;           // 가속도계(BNO085) - m/s²
 
 // 명령어 변수
+// 가이드 3.1.2 기준 최장 명령은 MEC: CMD,<TEAM_ID>,MEC,<DEVICE>,<ON_OFF> 로 5토큰 필요
 String cmdBuffer;                  // 수신된 명령어 버퍼
 String cmdEcho = "";               // 처리된 명령어 에코
-String cmdParts[4];                // 쉼표로 분할된 명령어 부분
+String cmdParts[5];                // 쉼표로 분할된 명령어 부분
 
 // 기압 변수
 float simPressure = 0;             // 시뮬레이션 모드 기압(hPa)
@@ -247,16 +248,11 @@ bool updateSensorData() {
       return false;
     }
     
-    // 안정화를 위해 첫 번째 읽기 무시 (1초 대기)
+    // 안정화를 위해 첫 번째 읽기 무시 (다음 20ms tick에 다시 읽음, 블로킹 X)
     if (!firstValidReadingDiscarded) {
-      if (firstReadingTime == 0) {
-        firstReadingTime = millis();
-        if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
-      }
-      if (millis() - firstReadingTime < 1000) {
-        return true;
-      }
       firstValidReadingDiscarded = true;
+      if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
+      return true;
     }
   }
   
@@ -344,13 +340,25 @@ void readVoltageAndCurrent() {
 }
 
 /**
- * GPS 데이터 읽기 및 처리
+ * GPS 데이터 읽기 및 처리 (비블로킹)
+ *
+ * Adafruit_GPS는 내부 NMEA 버퍼를 가지므로, 사용 가능한 바이트만 소비하고 리턴한다.
+ * 파싱 성공 시 위/경도를 십진수(decimal degrees)로 변환해 전역에 캐싱한다 — N/S/E/W에 따라 부호 처리.
  */
 void readGPSData() {
   while (GPSSerial.available()) {
     GPS.read();
     if (GPS.newNMEAreceived()) {
-      GPS.parse(GPS.lastNMEA());
+      if (GPS.parse(GPS.lastNMEA())) {
+        if (GPS.fix) {
+          gpsLatitude = convertNMEAtoDecimalDegrees(GPS.latitude);
+          if (GPS.lat == 'S') gpsLatitude = -gpsLatitude;
+          gpsLongitude = convertNMEAtoDecimalDegrees(GPS.longitude);
+          if (GPS.lon == 'W') gpsLongitude = -gpsLongitude;
+          gpsAltitude = GPS.altitude;
+          gpsSatellites = GPS.satellites;
+        }
+      }
     }
   }
 }
@@ -431,10 +439,10 @@ String generateTelemetry() {
     + String(accelY, 2) + ","                            // 가속도 Y(m/s²)
     + String(accelZ, 2) + ","                            // 가속도 Z(m/s²)
     + String(gpsTimeBuf) + ","                           // GPS 시간
-    + String(GPS.altitude, 1) + ","                      // GPS 고도 (0.1m resolution)
-    + String(convertNMEAtoDecimalDegrees(GPS.latitude), 4) + ","   // GPS 위도 (변환됨)
-    + String(convertNMEAtoDecimalDegrees(GPS.longitude), 4) + ","  // GPS 경도 (변환됨)
-    + String(GPS.satellites) + ","                       // 위성 수
+    + String(gpsAltitude, 1) + ","                       // GPS 고도(m) — 캐시된 값
+    + String(gpsLatitude, 4) + ","                       // GPS 위도(decimal degrees)
+    + String(gpsLongitude, 4) + ","                      // GPS 경도(decimal degrees)
+    + String(gpsSatellites) + ","                        // 위성 수
     + cmdEcho;                                           // 명령어 에코
       
   return csvData;
@@ -483,26 +491,27 @@ void updateMissionTime() {
 
 /**
  * 정기적인 간격으로 텔레메트리 전송 처리
+ *
+ * 첫 패킷(packetCount == 0)은 CX ON 직후 즉시 00:00:00으로 송신.
+ * 이후 패킷은 1초가 지난 뒤 missionTime을 +1초 증가시켜 송신.
+ * (시간 증가가 송신보다 먼저 일어나면 첫 패킷이 00:00:01부터 시작하는 버그가 됨)
  */
 void handleTelemetryTransmission() {
-  // 1초가 지났는지 확인
-  if (millis() - previousMillis >= 1000) {
-    previousMillis = millis();
-    updateMissionTime();
+  bool firstPacket = (packetCount == 0);
+  if (!firstPacket && (millis() - previousMillis < 1000)) return;
 
-    // 활성화된 경우 텔레메트리 생성 및 전송
-    if (telemetryEnabled) {
-      telemetryCSV = generateTelemetry();
-      
-      if (packetCount > 0){
-        // 시리얼 및 XBee로 전송
-        Serial.println(telemetryCSV);
-        XBEE.println(telemetryCSV);
-      }
-      
-      packetCount++;
-    }
+  if (firstPacket) {
+    previousMillis = millis();
+  } else {
+    previousMillis += 1000;   // 누적 드리프트 방지
+    updateMissionTime();
   }
+
+  telemetryCSV = generateTelemetry();
+  Serial.println(telemetryCSV);
+  XBEE.println(telemetryCSV);
+  writeTelemetryToSD();
+  packetCount++;
 }
 
 // ---------------------------------------------------
@@ -514,11 +523,14 @@ void handleTelemetryTransmission() {
  * @param commandString 처리할 명령어 문자열
  */
 void parseCommand(String commandString) {
-  // 쉼표를 기준으로 명령어를 부분으로 분할
+  // 이전 명령에서 남은 슬롯을 비워두기 (e.g. MEC 다음 CX가 와도 cmdParts[4]가 남지 않도록)
+  for (int i = 0; i < 5; i++) cmdParts[i] = "";
+
+  // 쉼표를 기준으로 최대 5토큰으로 분할
   int startIdx = 0;
   int tokenIndex = 0;
-  
-  while (tokenIndex < 4) {
+
+  while (tokenIndex < 5) {
     int commaIndex = commandString.indexOf(',', startIdx);
     if (commaIndex == -1) {
       cmdParts[tokenIndex] = commandString.substring(startIdx);
@@ -528,9 +540,8 @@ void parseCommand(String commandString) {
     startIdx = commaIndex + 1;
     tokenIndex++;
   }
-  
-  // 부분에서 공백 제거
-  for (int i = 0; i < 4; i++) {
+
+  for (int i = 0; i < 5; i++) {
     cmdParts[i].trim();
   }
 }
@@ -541,6 +552,11 @@ void parseCommand(String commandString) {
 void executeCXCommand() {
   if (cmdParts[3].equals("ON")) {
     telemetryEnabled = true;
+    // 첫 패킷이 00:00:00으로 송신되도록 시간/카운터/타이머 초기화
+    // (calibration/sim 상태는 유지)
+    memset(missionTime, 0, sizeof(missionTime));
+    packetCount = 0;
+    previousMillis = millis();
   } else if (cmdParts[3].equals("OFF")) {
     telemetryEnabled = false;
     isCalibrated = false;
@@ -613,20 +629,37 @@ void executeSIMPCommand() {
       Serial.println(simPressure);
     }
   }
+  cmdEcho = cmdParts[2] + cmdParts[3];   // 다른 명령들과 동일한 echo 형식
 }
 
 /**
  * MEC 명령어 실행 (기계장치 제어)
+ * 포맷: CMD,<TEAM_ID>,MEC,<DEVICE>,<ON_OFF>
+ *   cmdParts[3] = DEVICE  (현재는 "SERVO" 단일 — 서보 2개가 하나처럼 동작)
+ *   cmdParts[4] = ON | OFF
  */
 void executeMECCommand() {
-  if (cmdParts[3].equals("ON")) {
-    if (DEBUG) Serial.println("번와이어 활성화!");
-    
+  bool turnOn = cmdParts[4].equalsIgnoreCase("ON");
+
+  if (cmdParts[3].equalsIgnoreCase("SERVO")) {
+    if (turnOn) {
+      if (DEBUG) Serial.println("SERVO 활성화!");
+      // TODO: 서보 ON 코드
+    } else {
+      if (DEBUG) Serial.println("SERVO 비활성화!");
+      // TODO: 서보 OFF 코드
+    }
   } else {
-    if (DEBUG) Serial.println("번와이어 비활성화!");
-    // 여기에 번와이어 비활성화 코드 추가
+    if (DEBUG) {
+      Serial.print("알 수 없는 MEC device: ");
+      Serial.println(cmdParts[3]);
+    }
   }
-  cmdEcho = cmdParts[2] + cmdParts[3];
+
+  // CMD_ECHO는 쉼표 금지 (가이드 3.1.1.1 #18). 가독성 위해 언더스코어로 구분 + ON/OFF는 대문자 정규화.
+  // 예) MEC_SERVO_ON, MEC_SERVO_OFF
+  String onOff = turnOn ? "ON" : "OFF";
+  cmdEcho = cmdParts[2] + "_" + cmdParts[3] + "_" + onOff;
 }
 
 // TODO : 패러글라이더 제어 함수 구현
@@ -648,8 +681,8 @@ void processCommands() {
     inputCmd = Serial.readStringUntil('\n');
   }
   
-  // 명령어가 수신되고 발사되지 않은 경우 처리
-  if (inputCmd.length() > 0 && !isLaunched) {
+  // 명령어가 수신된 경우 처리
+  if (inputCmd.length() > 0) {
     cmdBuffer = inputCmd;
     parseCommand(cmdBuffer);
     
@@ -666,8 +699,7 @@ void processCommands() {
       } 
       else if (cmdParts[2].equals("SIMP")) {
         executeSIMPCommand();
-        cmdEcho = cmdParts[2];
-      } 
+      }
       else if (cmdParts[2].equals("CAL")) {
         calibratePressure();
         cmdEcho = cmdParts[2];
@@ -706,14 +738,18 @@ void updateFlightState() {
       break;
 
     case ASCENT:
-      // 최대 고도 추적
+      // 최대 고도 추적 + 연속 하강 샘플로 APOGEE 판정 (단일 노이즈로 전환 방지)
       if (altitude > maxAltitude) {
         maxAltitude = altitude;
-      }
-      // 더 이상 상승하지 않으면 APOGEE로 전환
-      else if (altitude < prevAltitude) {
-        currentState = APOGEE;
-        if (DEBUG) Serial.println("상태 전환: APOGEE (최고점)");
+        descendingCount = 0;
+      } else if (altitude < prevAltitude) {
+        descendingCount++;
+        if (descendingCount >= DESCENT_CONFIRM_COUNT) {
+          currentState = APOGEE;
+          if (DEBUG) Serial.println("상태 전환: APOGEE (최고점)");
+        }
+      } else {
+        descendingCount = 0;
       }
       break;
 
@@ -726,17 +762,17 @@ void updateFlightState() {
       break;
 
     case DESCENT:
-      // 최대 고도의 80%에서 PROBE_RELEASE로 전환
+      // 최대 고도의 80%에서 PAYLOAD_RELEASE로 전환 (페이로드 분리)
       if (altitude <= maxAltitude * 0.80) {
-        currentState = PROBE_RELEASE;
-        if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
+        currentState = PAYLOAD_RELEASE;
+        if (DEBUG) Serial.println("상태 전환: PAYLOAD_RELEASE (페이로드 방출)");
         // TODO : 여기에 컨테이너-페이로드 분리 시스템 코드 추가
       }
       break;
 
     case PAYLOAD_RELEASE:
-      // 2.3m 미만일 때 PROBE_RELEASE로 전환
-      if (altitude <= 2 || altitude < 2.3) {
+      // 2.3m 이하일 때 PROBE_RELEASE로 전환 (계란 방출)
+      if (altitude <= 2.3) {
         currentState = PROBE_RELEASE;
         if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
         // TODO : 여기에 계란 방출 시스템 코드 추가
@@ -744,7 +780,7 @@ void updateFlightState() {
       break;
 
     case PROBE_RELEASE:
-      // 10m 미만일 때 LANDED로 전환
+      // 1m 미만일 때 LANDED로 전환
       if (altitude < 1) {
         currentState = LANDED;
         if (DEBUG) Serial.println("상태 전환: LANDED (착륙)");
@@ -777,6 +813,7 @@ void resetParameters() {
   firstValidReadingDiscarded = false;
   maxAltitude = 0;
   prevAltitude = 0;
+  descendingCount = 0;
 }
 
 // ---------------------------------------------------
@@ -817,22 +854,10 @@ void loop() {
     }
   }
   
-  // 텔레메트리가 활성화된 경우에만 다른 작업 진행
+  // 텔레메트리 전송 처리 (1초 간격, SD 쓰기 포함)
+  // SIM 모드에서는 firstValidReadingDiscarded가 세팅되지 않으므로 가드를 두지 않음.
+  // BMP 첫 읽기 무시는 updateSensorData 내부에서 처리됨.
   if (telemetryEnabled) {
-    
-    // 첫번째 값을 무시한 상태일 때 패킷 송신
-    if (firstValidReadingDiscarded) {
-      // 텔레메트리 전송 처리 (1초 간격)
-      handleTelemetryTransmission();
-    }
-    
-    
-    // 보정된 경우 비행 상태 업데이트
-    if (isCalibrated) {
-      updateFlightState();
-    }
-    
-    // SD 카드에 데이터 기록
-    writeTelemetryToSD();
+    handleTelemetryTransmission();
   }
 }
