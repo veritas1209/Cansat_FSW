@@ -70,6 +70,7 @@ bool firstValidReadingDiscarded = false; // BMP390 안정화를 위한 플래그
 FlightState currentState = LAUNCH_PAD;   // 현재 비행 상태
 unsigned long lastSensorUpdate = 0;
 const unsigned long SENSOR_INTERVAL = 20; // 20ms = 50Hz 주기
+unsigned long firstReadingTime = 0;
 
 // 미션 시간 (HH, MM, SS)
 byte missionTime[3] = {0, };     // 미션 시간
@@ -246,13 +247,17 @@ bool updateSensorData() {
       return false;
     }
     
-    // 안정화를 위해 첫 번째 읽기 무시
+    // 안정화를 위해 첫 번째 읽기 무시 (1초 대기)
     if (!firstValidReadingDiscarded) {
+      if (firstReadingTime == 0) {
+        firstReadingTime = millis();
+        if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
+      }
+      if (millis() - firstReadingTime < 1000) {
+        return true;
+      }
       firstValidReadingDiscarded = true;
-      if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
-      delay(1000);
-      return true;  // 다음 주기에 다시 읽을 것이므로 일찍 반환
-    } 
+    }
   }
   
   // 센서에서 온도 업데이트
@@ -342,21 +347,10 @@ void readVoltageAndCurrent() {
  * GPS 데이터 읽기 및 처리
  */
 void readGPSData() {
-  bool newData = false;
-  
-  // 최대 200ms 동안 GPS 데이터 시도
-  unsigned long start = millis();
-  while (millis() - start < 200) {  
-    if (GPSSerial.available()) {
-      char c = GPS.read();
-      
-      // 새 NMEA 문장 확인
-      if (GPS.newNMEAreceived()) {
-        if (GPS.parse(GPS.lastNMEA())) {
-          newData = true;
-          break;  // 유효한 데이터 수신, 루프 종료
-        }
-      }
+  while (GPSSerial.available()) {
+    GPS.read();
+    if (GPS.newNMEAreceived()) {
+      GPS.parse(GPS.lastNMEA());
     }
   }
 }
