@@ -10,10 +10,12 @@
 - 실제로 서보 PWM 출력 / GPIO 토글 등 하드웨어 제어 로직 추가 필요
 - 안전 동작(이중 트리거 방지, 비상 정지 등) 고려
 
-## 3. 카메라 제어 (미구현)
-- 카메라 ON/OFF, 녹화 시작/종료 제어 로직 작성
-- MEC 명령 또는 별도 명령으로 트리거할지 결정 필요
-- 비행 단계 자동 트리거(LAUNCH 시 녹화 시작 등) 검토
+## 3. 카메라 제어 (구현 완료, 추가 검증 필요)
+- Xiao ESP32S3 Sense 2대 (PL_RELS_CAM=Serial3, GROUND_CAM=Serial5) UART 제어 구현
+- 프로토콜: 9600 baud, '1'=녹화 시작 / '0'=녹화 종료, ESP32가 같은 문자로 ACK
+- MEC 수동 제어: `CMD,1062,MEC,CAM_PL,ON|OFF`, `CMD,1062,MEC,CAM_GND,ON|OFF`
+- 자동 트리거: LAUNCH_PAD→ASCENT 시 두 카메라 모두 시작, →LANDED 시 모두 종료
+- ⚠ 알려진 충돌: PL_RELS_CAM(Serial3) == GPSSerial(Serial3). 실 PCB는 GPS가 Serial6에 연결되어 있으므로 GPSSerial을 Serial6으로 이동하는 후속 작업 필요
 
 ## 참고
 - 미션가이드 3.1.1.1 / 3.1.2 명령어 포맷 준수 유지
