@@ -708,7 +708,10 @@ void controlParaglider() {
     case STEER_IDLE:
       {
         // GPS 데이터가 정상(Fix)일 때만 계산
-        if (gpsLatitude == 0 || gpsLongitude == 0) return;
+        if (gpsLatitude == 0 || gpsLongitude == 0) {
+          if (DEBUG) Serial.println("조향 대기: GPS Fix(수신) 안 됨");
+          return;
+        }
 
         float targetBearing = calculateBearing(gpsLatitude, gpsLongitude, TARGET_LAT, TARGET_LON);
         float headingError = targetBearing - headingYaw;
