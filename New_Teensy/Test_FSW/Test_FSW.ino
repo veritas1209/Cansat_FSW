@@ -7,6 +7,7 @@
 #include <SD.h>
 #include <PWMServo.h>          // Teensyduino 기본 포함. 표준 Arduino Servo 라이브러리는 Teensy 4.x 미지원.
 #include "Wire.h"
+#include <EEPROM.h>   // 리커버리를 위한 내부 EEPROM 라이브러리 추가
 
 // =====================================================
 // Test_FSW — Real_FSW 베이스 테스트용 스케치
@@ -48,6 +49,24 @@
 #define SERVO_STOP_US      1500
 #define SERVO_FORWARD_US   1000  // ON 시 회전 속도/방향
 #define SERVO_REVERSE_US   2000  // OFF 시 복귀 회전
+#define TARGET_LAT 37.123456   // TODO: 실제 목표 위도로 변경
+#define TARGET_LON 127.123456  // TODO: 실제 목표 경도로 변경
+
+const int PULL_TIME_MS = 200;     // 줄을 당기는 시간 (0.2초)
+const int RELEASE_TIME_MS = 190;  // 줄을 푸는 시간 (바람 장력을 고려해 당기는 시간보다 살짝 짧게 세팅)
+const int COOLDOWN_TIME_MS = 800; // 한 번 당긴 후 기체가 안정될 때까지 기다리는 시간 (0.8초)
+const float DEADZONE_DEG = 15.0;  // 오차가 ±15도 이내면 직진(조향 안함)
+
+enum SteerState { 
+  STEER_IDLE, 
+  STEER_PULL_LEFT, STEER_RELEASE_LEFT, 
+  STEER_PULL_RIGHT, STEER_RELEASE_RIGHT, 
+  STEER_COOLDOWN 
+};
+SteerState steerState = STEER_IDLE;
+unsigned long steerTimer = 0;
+
+float headingYaw = 0; // BNO085에서 계산된 기체의 현재 절대 방향(0~360도)
 
 // ---------------------------------------------------
 // 전역 객체
@@ -92,6 +111,24 @@ const String STATE_STRINGS[] = {
   "PROBE_RELEASE",
   "LANDED"
 };
+
+// ==========================================
+// 리커버리(EEPROM) 데이터 구조체 및 설정
+// ==========================================
+#define EEPROM_ADDR 0
+#define MAGIC_NUMBER 0xA5A5 // 올바른 데이터인지 판별하는 고유 암호
+
+struct RecoveryData {
+  uint16_t magicNumber;
+  FlightState currentState;
+  float maxAltitude;
+  int packetCount;
+  byte missionTime[3];
+  float groundPressure;
+};
+
+RecoveryData flightData;
+float lastSavedAltitude = 0; // 잦은 EEPROM 쓰기를 방지하기 위한 변수
 
 // 시스템 상태 변수
 bool telemetryEnabled = false;
@@ -329,6 +366,16 @@ void readIMUData() {
         gyroP = sensorValue.un.gyroscope.y * RAD_TO_DEG;
         gyroY = sensorValue.un.gyroscope.z * RAD_TO_DEG;
         break;
+      case SH2_ROTATION_VECTOR: // ★ 방향(나침반) 각도 계산 추가
+        float qr = sensorValue.un.rotationVector.real;
+        float qi = sensorValue.un.rotationVector.i;
+        float qj = sensorValue.un.rotationVector.j;
+        float qk = sensorValue.un.rotationVector.k;
+        
+        // 쿼터니언을 오일러 각도(Yaw)로 변환
+        headingYaw = atan2(2.0 * (qr * qk + qi * qj), 1.0 - 2.0 * (qj * qj + qk * qk)) * RAD_TO_DEG;
+        if (headingYaw < 0) headingYaw += 360.0; // 0 ~ 360도로 정규화
+        break;
     }
   }
 }
@@ -498,6 +545,7 @@ void executeCXCommand() {
     memset(missionTime, 0, sizeof(missionTime));
     packetCount = 0;
     previousMillis = millis();
+    clearRecoveryData(); // ★ 새 비행 시작! 기존 EEPROM 리커버리 데이터 삭제
   } else if (cmdParts[3].equals("OFF")) {
     telemetryEnabled = false;
     isCalibrated = false;
@@ -610,7 +658,107 @@ void executeServoCommand() {
   cmdEcho = "SERVO_" + String(turnOn ? "ON" : "OFF");
 }
 
+// ---------------------------------------------------
+// 서보 모터 제어 함수
+// ---------------------------------------------------
+
+// 목표 GPS 좌표까지의 방위각(Bearing)을 계산하는 함수
+float calculateBearing(float lat1, float lon1, float lat2, float lon2) {
+  float dLon = (lon2 - lon1) * DEG_TO_RAD;
+  lat1 = lat1 * DEG_TO_RAD;
+  lat2 = lat2 * DEG_TO_RAD;
+
+  float y = sin(dLon) * cos(lat2);
+  float x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+  float bearing = atan2(y, x) * RAD_TO_DEG;
+  
+  if (bearing < 0) bearing += 360.0;
+  return bearing;
+}
+
+// 패러글라이더 펄스(짧게 끊어치는) 조향 제어 로직
 void controlParaglider() {
+  // 1. 고도 안전 장치 (2.3m 이하에서는 낙하 준비를 위해 조향 완전 중지)
+  if (altitude <= 2.3) {
+    servoLeft.writeMicroseconds(SERVO_STOP_US);
+    servoRight.writeMicroseconds(SERVO_STOP_US);
+    steerState = STEER_IDLE;
+    return;
+  }
+
+  // 2. 비블로킹 타이머 기반 상태 머신 (툭 -> 툭 -> 대기)
+  unsigned long currentMillis = millis();
+  
+  switch (steerState) {
+    case STEER_IDLE:
+      {
+        // GPS 데이터가 정상(Fix)일 때만 계산
+        if (gpsLatitude == 0 || gpsLongitude == 0) return;
+
+        float targetBearing = calculateBearing(gpsLatitude, gpsLongitude, TARGET_LAT, TARGET_LON);
+        float headingError = targetBearing - headingYaw;
+
+        // 오차를 -180 ~ +180도로 정규화
+        while (headingError <= -180.0) headingError += 360.0;
+        while (headingError > 180.0) headingError -= 360.0;
+
+        // 데드존 판단 (오차가 크면 턴 시작)
+        if (headingError > DEADZONE_DEG) {
+          // 목표가 오른쪽에 있음 -> 우측 턴 시작
+          servoRight.writeMicroseconds(SERVO_FORWARD_US); // 당기기
+          steerTimer = currentMillis;
+          steerState = STEER_PULL_RIGHT;
+          if(DEBUG) Serial.println("조향: 우측 턴 (당기기)");
+        } 
+        else if (headingError < -DEADZONE_DEG) {
+          // 목표가 왼쪽에 있음 -> 좌측 턴 시작
+          servoLeft.writeMicroseconds(SERVO_FORWARD_US); // 당기기
+          steerTimer = currentMillis;
+          steerState = STEER_PULL_LEFT;
+          if(DEBUG) Serial.println("조향: 좌측 턴 (당기기)");
+        }
+      }
+      break;
+
+    // --- 좌측 서보 제어 사이클 ---
+    case STEER_PULL_LEFT:
+      if (currentMillis - steerTimer >= PULL_TIME_MS) {
+        servoLeft.writeMicroseconds(SERVO_REVERSE_US); // 풀기
+        steerTimer = currentMillis;
+        steerState = STEER_RELEASE_LEFT;
+      }
+      break;
+    case STEER_RELEASE_LEFT:
+      if (currentMillis - steerTimer >= RELEASE_TIME_MS) {
+        servoLeft.writeMicroseconds(SERVO_STOP_US); // 정지
+        steerTimer = currentMillis;
+        steerState = STEER_COOLDOWN;
+      }
+      break;
+
+    // --- 우측 서보 제어 사이클 ---
+    case STEER_PULL_RIGHT:
+      if (currentMillis - steerTimer >= PULL_TIME_MS) {
+        servoRight.writeMicroseconds(SERVO_REVERSE_US); // 풀기
+        steerTimer = currentMillis;
+        steerState = STEER_RELEASE_RIGHT;
+      }
+      break;
+    case STEER_RELEASE_RIGHT:
+      if (currentMillis - steerTimer >= RELEASE_TIME_MS) {
+        servoRight.writeMicroseconds(SERVO_STOP_US); // 정지
+        steerTimer = currentMillis;
+        steerState = STEER_COOLDOWN;
+      }
+      break;
+
+    // --- 쿨다운 (기체가 회전할 시간을 줌) ---
+    case STEER_COOLDOWN:
+      if (currentMillis - steerTimer >= COOLDOWN_TIME_MS) {
+        steerState = STEER_IDLE; // 다시 각도 측정 시작
+      }
+      break;
+  }
 }
 
 // ---------------------------------------------------
@@ -773,6 +921,8 @@ void processCommands() {
 void updateFlightState() {
   if (!isCalibrated) return;
 
+  FlightState oldState = currentState; // 이전 상태 기억
+
   switch (currentState) {
     case LAUNCH_PAD:
       if (altitude >= 10 && altitude > prevAltitude) {
@@ -830,6 +980,17 @@ void updateFlightState() {
       break;
   }
 
+  // ★ 리커버리 데이터 저장 로직 
+  // 1. 비행 상태(State)가 넘어가는 결정적 순간
+  if (currentState != oldState) {
+    saveRecoveryData();
+  } 
+  // 2. ASCENT 상태에서 최고 고도가 10미터 이상 갱신될 때 간헐적 저장
+  else if (currentState == ASCENT && (maxAltitude - lastSavedAltitude >= 10.0)) {
+    saveRecoveryData();
+    lastSavedAltitude = maxAltitude;
+  }
+
   prevAltitude = altitude;
 }
 
@@ -851,12 +1012,57 @@ void resetParameters() {
 }
 
 // ---------------------------------------------------
+// 리커버리(EEPROM) 제어 함수
+// ---------------------------------------------------
+void saveRecoveryData() {
+  flightData.magicNumber = MAGIC_NUMBER;
+  flightData.currentState = currentState;
+  flightData.maxAltitude = maxAltitude;
+  flightData.packetCount = packetCount;
+  flightData.missionTime[0] = missionTime[0];
+  flightData.missionTime[1] = missionTime[1];
+  flightData.missionTime[2] = missionTime[2];
+  flightData.groundPressure = groundPressure;
+  
+  EEPROM.put(EEPROM_ADDR, flightData);
+  if (DEBUG) Serial.println("EEPROM: 비행 상태 저장 완료!");
+}
+
+void loadRecoveryData() {
+  EEPROM.get(EEPROM_ADDR, flightData);
+  
+  if (flightData.magicNumber == MAGIC_NUMBER) {
+    currentState = flightData.currentState;
+    maxAltitude = flightData.maxAltitude;
+    packetCount = flightData.packetCount;
+    missionTime[0] = flightData.missionTime[0];
+    missionTime[1] = flightData.missionTime[1];
+    missionTime[2] = flightData.missionTime[2];
+    lastSavedAltitude = maxAltitude;
+    groundPressure = flightData.groundPressure;
+    
+    // 리커버리가 완료되면 기존의 지표면 기압(보정치) 대신 표준 기압으로 
+    // 임시 계산되도록 isCalibrated를 강제 활성화 (공중에서 재부팅 시 막힘 방지)
+    isCalibrated = true; 
+    if (DEBUG) Serial.println("EEPROM: 공중 재부팅 감지! 기존 비행 데이터 복구 완료!");
+  } else {
+    if (DEBUG) Serial.println("EEPROM: 정상 초기 구동 (저장된 복구 데이터 없음)");
+  }
+}
+
+void clearRecoveryData() {
+  flightData.magicNumber = 0x0000; // 암호를 지워서 초기화 상태로 만듦
+  EEPROM.put(EEPROM_ADDR, flightData);
+  if (DEBUG) Serial.println("EEPROM: 리커버리 데이터 초기화 완료");
+}
+
+// ---------------------------------------------------
 // 아두이노 메인 함수
 // ---------------------------------------------------
 
 void setup() {
-  Serial.begin(9600);
-  XBEE.begin(9600);
+  Serial.begin(115200);
+  XBEE.begin(115200);
 
   PL_RELS_CAM.begin(CAM_BAUD);
   GROUND_CAM.begin(CAM_BAUD);
@@ -868,6 +1074,7 @@ void setup() {
   servoRight.writeMicroseconds(SERVO_STOP_US);
 
   initSensors();
+  loadRecoveryData(); // 센서 초기화 직후, 복구할 데이터가 있는지 확인
 
   if (DEBUG) Serial.println("Test_FSW 시작 — CMD,1062,TEST/CAMERA,ON/OFF/SERVO,ON/OFF 사용 가능");
 }
