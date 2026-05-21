@@ -143,6 +143,13 @@ const unsigned long SENSOR_INTERVAL = 20;
 byte descendingCount = 0;
 const byte DESCENT_CONFIRM_COUNT = 3;
 
+// ★ 노이즈 방지용 연속 카운터 변수 추가
+byte ascentCount = 0;
+byte payloadReleaseCount = 0;
+byte landedCount = 0;
+const byte CONFIRM_COUNT = 5;         // ASCENT, LANDED 용 (100ms 유지)
+const byte PAYLOAD_CONFIRM_COUNT = 3; // PAYLOAD_RELEASE 용 (60ms 유지)
+
 // 미션 시간
 byte missionTime[3] = {0, };
 
@@ -314,9 +321,11 @@ bool updateSensorData() {
       if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
       return true;
     }
+    
+    // ★ 실제 측정 모드일 때만 온도를 업데이트 (SIM일 땐 0 고정 등 방지 위함)
+    temperature = bmp.temperature;
   }
 
-  temperature = bmp.temperature;
   updatePressureAndAltitude();
   readIMUData();
   readVoltageAndCurrent();
@@ -332,7 +341,7 @@ void updatePressureAndAltitude() {
     currentPressure = bmp.pressure / 100.0;
   }
 
-  pressure = currentPressure / 10.0;
+  pressure = currentPressure;
 
   if (isCalibrated && groundPressure > 0) {
     if (simModeEnabled) {
@@ -354,7 +363,8 @@ void updatePressureAndAltitude() {
 }
 
 void readIMUData() {
-  if (bno08x.getSensorEvent(&sensorValue)) {
+  // if를 while로 변경하여 버퍼에 남은 데이터를 모두 소진
+  while (bno08x.getSensorEvent(&sensorValue)) {
     switch (sensorValue.sensorId) {
       case SH2_ACCELEROMETER:
         accelX = sensorValue.un.accelerometer.x;
@@ -366,15 +376,14 @@ void readIMUData() {
         gyroP = sensorValue.un.gyroscope.y * RAD_TO_DEG;
         gyroY = sensorValue.un.gyroscope.z * RAD_TO_DEG;
         break;
-      case SH2_ROTATION_VECTOR: // ★ 방향(나침반) 각도 계산 추가
+      case SH2_ROTATION_VECTOR: 
         float qr = sensorValue.un.rotationVector.real;
         float qi = sensorValue.un.rotationVector.i;
         float qj = sensorValue.un.rotationVector.j;
         float qk = sensorValue.un.rotationVector.k;
         
-        // 쿼터니언을 오일러 각도(Yaw)로 변환
         headingYaw = atan2(2.0 * (qr * qk + qi * qj), 1.0 - 2.0 * (qj * qj + qk * qk)) * RAD_TO_DEG;
-        if (headingYaw < 0) headingYaw += 360.0; // 0 ~ 360도로 정규화
+        if (headingYaw < 0) headingYaw += 360.0; 
         break;
     }
   }
@@ -410,9 +419,9 @@ float convertNMEAtoDecimalDegrees(float nmeaCoord) {
 }
 
 bool calibratePressure() {
-  isCalibrated = true;
   if (simModeEnabled) {
     groundPressure = simPressure / 100.0;
+    isCalibrated = true;
     if (DEBUG) {
       Serial.print("시뮬레이션 보정 완료. 지면 기압: ");
       Serial.print(groundPressure, 1);
@@ -422,6 +431,7 @@ bool calibratePressure() {
   } else {
     if (bmp.performReading()) {
       groundPressure = bmp.pressure / 100.0;
+      isCalibrated = true;
       if (DEBUG) {
         Serial.print("보정 완료. 지면 기압: ");
         Serial.print(groundPressure, 1);
@@ -474,18 +484,16 @@ String generateTelemetry() {
 }
 
 bool writeTelemetryToSD() {
-  packetFile = SD.open(CSV_FILENAME, FILE_WRITE);
+  // 루프 돌 때마다 open/close 하지 않고 파일이 열려있으면 즉시 쓰기 및 flush
   if (packetFile) {
     packetFile.println(telemetryCSV);
-    packetFile.close();
+    packetFile.flush(); 
     return true;
-  } else {
-    if (DEBUG) {
-      Serial.print("파일 열기 오류: ");
-      Serial.println(CSV_FILENAME);
+  } 
+  if (DEBUG && currentState != LANDED) {
+      Serial.println("SD 파일 기록 오류: 파일이 열려있지 않음");
     }
     return false;
-  }
 }
 
 void updateMissionTime() {
@@ -653,6 +661,13 @@ void executeCameraCommand() {
  *   OFF → SERVO_HOME_ANGLE
  */
 void executeServoCommand() {
+  // ★ 자율 조향 중일 때는 수동 서보 제어 명령 무시
+  if (currentState == PAYLOAD_RELEASE || currentState == PROBE_RELEASE) {
+    if (DEBUG) Serial.println("경고: 자율 조향 중이므로 수동 SERVO 명령을 무시합니다.");
+    cmdEcho = "SERVO_IGNORED";
+    return;
+  }
+
   bool turnOn = cmdParts[3].equalsIgnoreCase("ON");
   moveServos(turnOn);
   cmdEcho = "SERVO_" + String(turnOn ? "ON" : "OFF");
@@ -926,9 +941,14 @@ void updateFlightState() {
   switch (currentState) {
     case LAUNCH_PAD:
       if (altitude >= 10 && altitude > prevAltitude) {
-        currentState = ASCENT;
-        if (DEBUG) Serial.println("상태 전환: ASCENT (상승)");
-        startAllCameras();
+        ascentCount++;
+        if (ascentCount >= CONFIRM_COUNT) {
+          currentState = ASCENT;
+          if (DEBUG) Serial.println("상태 전환: ASCENT (상승)");
+          startAllCameras();
+        }
+      } else {
+        ascentCount = 0; // 조건 불만족 시 초기화
       }
       break;
 
@@ -956,8 +976,13 @@ void updateFlightState() {
 
     case DESCENT:
       if (altitude <= maxAltitude * 0.80) {
-        currentState = PAYLOAD_RELEASE;
-        if (DEBUG) Serial.println("상태 전환: PAYLOAD_RELEASE (페이로드 방출)");
+        payloadReleaseCount++;
+        if (payloadReleaseCount >= PAYLOAD_CONFIRM_COUNT) {
+          currentState = PAYLOAD_RELEASE;
+          if (DEBUG) Serial.println("상태 전환: PAYLOAD_RELEASE (페이로드 방출)");
+        }
+      } else {
+        payloadReleaseCount = 0;
       }
       break;
 
@@ -970,9 +995,18 @@ void updateFlightState() {
 
     case PROBE_RELEASE:
       if (altitude < 1) {
-        currentState = LANDED;
-        if (DEBUG) Serial.println("상태 전환: LANDED (착륙)");
-        stopAllCameras();
+        landedCount++;
+        if (landedCount >= CONFIRM_COUNT) {
+          currentState = LANDED;
+          if (DEBUG) Serial.println("상태 전환: LANDED (착륙)");
+          stopAllCameras();
+          if (packetFile) { // 임무 종료 시 안전하게 파일 닫기
+            packetFile.flush();
+            packetFile.close(); 
+          }
+        }
+      } else {
+        landedCount = 0;
       }
       break;
 
@@ -1009,6 +1043,9 @@ void resetParameters() {
   maxAltitude = 0;
   prevAltitude = 0;
   descendingCount = 0;
+  ascentCount = 0;
+  payloadReleaseCount = 0;
+  landedCount = 0;
 }
 
 // ---------------------------------------------------
@@ -1074,7 +1111,9 @@ void setup() {
   servoRight.writeMicroseconds(SERVO_STOP_US);
 
   initSensors();
-  loadRecoveryData(); // 센서 초기화 직후, 복구할 데이터가 있는지 확인
+  // ★ 센서 초기화 직후(SD begin 완료 후) 파일을 한 번만 열어둠
+  packetFile = SD.open(CSV_FILENAME, FILE_WRITE);
+  loadRecoveryData();
 
   if (DEBUG) Serial.println("Test_FSW 시작 — CMD,1062,TEST/CAMERA,ON/OFF/SERVO,ON/OFF 사용 가능");
 }
@@ -1094,10 +1133,12 @@ void loop() {
     if (isCalibrated) {
       updateFlightState();
     }
-    if (currentState == PAYLOAD_RELEASE || currentState == PROBE_RELEASE) {
+    
+  }
+
+  if (currentState == PAYLOAD_RELEASE || currentState == PROBE_RELEASE) {
       controlParaglider();
     }
-  }
 
   if (telemetryEnabled) {
     handleTelemetryTransmission();
