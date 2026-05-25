@@ -15,6 +15,7 @@
 //   CMD,1062,TEST              → 모든 센서 데이터 1회 읽고 패킷 출력
 //   CMD,1062,CAMERA,ON|OFF     → 두 카메라 동시 녹화 시작/종료
 //   CMD,1062,SERVO,ON|OFF      → 서보 동작 / 원위치 복귀
+//   CMD,1062,BURN[,PAYLOAD|PROBE] → 번와이어 점화 (2초 ON, 기본=페이로드)
 // 기존 Real_FSW의 CX/ST/SIM/SIMP/CAL/MEC 명령도 그대로 동작.
 // =====================================================
 
@@ -34,6 +35,8 @@
 #define DEBUG true
 #define CSV_FILENAME "Flight_1062.csv"
 #define STANDARD_SEA_LEVEL_PRESSURE_HPA 1013.25
+#define FIRE_PIN 13
+#define FIRE_PIN1 26
 
 // 서보 핀 (PCB 핀맵 기준)
 #define SERVO_LEFT_PIN  2          // PARA_CTRL_L → 핀 2
@@ -191,6 +194,14 @@ bool servoReversing = false;          // 역회전(복귀) 중인지
 unsigned long servoOnStartMs = 0;     // ON 시작 시각
 unsigned long servoReverseEndMs = 0;  // 역회전 종료 예정 시각
 
+// 번와이어 상태 변수 — 각 핀 독립적으로 2초 ON 후 자동 OFF (비블로킹)
+bool firePayloadActive = false;       // FIRE_PIN  (13): 페이로드 분리
+unsigned long firePayloadOffMs = 0;
+bool fireProbeActive = false;         // FIRE_PIN1 (26): 계란 분리
+unsigned long fireProbeOffMs = 0;
+const unsigned long FIRE_DURATION_MS = 2000;  // 2초
+
+
 // 텔레메트리 문자열
 String telemetryCSV;
 
@@ -230,6 +241,9 @@ void startAllCameras();
 void stopAllCameras();
 void moveServos(bool active);
 void updateServos();
+void firePayloadBurnWire();   // 13번 — 페이로드 분리
+void fireProbeBurnWire();     // 26번 — 계란 분리
+void updateBurnWires();
 
 // ---------------------------------------------------
 // 센서 함수
@@ -864,6 +878,45 @@ void moveServos(bool active) {
   }
 }
 
+// ---------------------------------------------------
+// 번와이어 제어 — 핀 13(페이로드), 핀 26(계란) 독립 점화
+// 각각 2초 ON 후 비블로킹으로 자동 OFF
+// ---------------------------------------------------
+void firePayloadBurnWire() {
+  if (firePayloadActive) {
+    if (DEBUG) Serial.println("FIRE_PIN(13): 이미 점화 중 — 무시");
+    return;
+  }
+  digitalWrite(FIRE_PIN, HIGH);
+  firePayloadOffMs = millis() + FIRE_DURATION_MS;
+  firePayloadActive = true;
+  if (DEBUG) Serial.println("FIRE_PIN(13) ON — 페이로드 분리 점화 (2초)");
+}
+
+void fireProbeBurnWire() {
+  if (fireProbeActive) {
+    if (DEBUG) Serial.println("FIRE_PIN1(26): 이미 점화 중 — 무시");
+    return;
+  }
+  digitalWrite(FIRE_PIN1, HIGH);
+  fireProbeOffMs = millis() + FIRE_DURATION_MS;
+  fireProbeActive = true;
+  if (DEBUG) Serial.println("FIRE_PIN1(26) ON — 계란 분리 점화 (2초)");
+}
+
+void updateBurnWires() {
+  if (firePayloadActive && (long)(millis() - firePayloadOffMs) >= 0) {
+    digitalWrite(FIRE_PIN, LOW);
+    firePayloadActive = false;
+    if (DEBUG) Serial.println("FIRE_PIN(13) OFF");
+  }
+  if (fireProbeActive && (long)(millis() - fireProbeOffMs) >= 0) {
+    digitalWrite(FIRE_PIN1, LOW);
+    fireProbeActive = false;
+    if (DEBUG) Serial.println("FIRE_PIN1(26) OFF");
+  }
+}
+
 /**
  * 역회전 완료 시점이 도래했는지 매 루프에서 확인 — 도래 시 정지 신호 발송.
  * (long)(now - target) >= 0 으로 비교해야 millis() 래핑에 안전.
@@ -922,6 +975,18 @@ void processCommands() {
       }
       else if (cmdParts[2].equals("SERVO")) {
         executeServoCommand();
+      }
+      else if (cmdParts[2].equals("BURN")) {
+        // CMD,1062,BURN,PAYLOAD  → 핀 13 점화
+        // CMD,1062,BURN,PROBE    → 핀 26 점화
+        // CMD,1062,BURN          → 기본값: 핀 13 (페이로드)
+        if (cmdParts[3].equalsIgnoreCase("PROBE")) {
+          fireProbeBurnWire();
+          cmdEcho = "BURN_PROBE";
+        } else {
+          firePayloadBurnWire();
+          cmdEcho = "BURN_PAYLOAD";
+        }
       }
 
       if (DEBUG) {
@@ -983,6 +1048,7 @@ void updateFlightState() {
         if (payloadReleaseCount >= PAYLOAD_CONFIRM_COUNT) {
           currentState = PAYLOAD_RELEASE;
           if (DEBUG) Serial.println("상태 전환: PAYLOAD_RELEASE (페이로드 방출)");
+          firePayloadBurnWire();              // ★ 핀 13 — 페이로드 분리
         }
       } else {
         payloadReleaseCount = 0;
@@ -993,6 +1059,7 @@ void updateFlightState() {
       if (altitude <= 2.3) {
         currentState = PROBE_RELEASE;
         if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
+        fireProbeBurnWire();                  // ★ 핀 26 — 계란 분리
       }
       break;
 
@@ -1112,13 +1179,17 @@ void setup() {
   servoRight.attach(SERVO_RIGHT_PIN);
   servoLeft.writeMicroseconds(SERVO_STOP_US);
   servoRight.writeMicroseconds(SERVO_STOP_US);
+  pinMode(FIRE_PIN, OUTPUT);
+  digitalWrite(FIRE_PIN, LOW);
+  pinMode(FIRE_PIN1, OUTPUT);
+  digitalWrite(FIRE_PIN1, LOW);
 
   initSensors();
   // ★ 센서 초기화 직후(SD begin 완료 후) 파일을 한 번만 열어둠
   packetFile = SD.open(CSV_FILENAME, FILE_WRITE);
   loadRecoveryData();
 
-  if (DEBUG) Serial.println("Test_FSW 시작 — CMD,1062,TEST/CAMERA,ON/OFF/SERVO,ON/OFF 사용 가능");
+  if (DEBUG) Serial.println("Test_FSW 시작 — CMD,1062,TEST/CAMERA/SERVO/BURN 사용 가능");
 }
 
 void loop() {
@@ -1126,6 +1197,7 @@ void loop() {
 
   // 연속회전 서보 역회전 완료 시점 체크
   updateServos();
+  updateBurnWires();          // ★ 추가 — 두 핀 모두 2초 경과 체크
 
   readCameraAck(GROUND_CAM, "GROUND_CAM");
 
