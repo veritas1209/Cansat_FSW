@@ -36,7 +36,7 @@
 
 // 서보 핀 (PCB 핀맵 기준)
 #define SERVO_LEFT_PIN  2          // PARA_CTRL_L → 핀 2
-#define SERVO_RIGHT_PIN 4          // PARA_CTRL_R → 핀 4 (LRCLK2)
+#define SERVO_RIGHT_PIN 3          // PARA_CTRL_R → 핀 3
 
 // SG90 360도(연속회전) 서보용 — 펄스폭(μs)으로 직접 제어.
 // PWMServo.write(angle)이 라이브러리/보드 매핑 따라 정지 펄스에서 어긋날 수 있어 writeMicroseconds 사용.
