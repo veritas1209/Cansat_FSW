@@ -5,7 +5,7 @@
 #include <Adafruit_INA260.h>
 #include <SPI.h>
 #include <SD.h>
-#include <PWMServo.h>          // Teensyduino 기본 포함. 표준 Arduino Servo 라이브러리는 Teensy 4.x 미지원.
+#include <Servo.h>             // Teensyduino Servo: FlexPWM 하드웨어 기반 50Hz 출력 — PWMServo(analogWrite 기반)는 Teensy 4.x에서 주파수 불일치로 서보 무반응.
 #include "Wire.h"
 #include <EEPROM.h>   // 리커버리를 위한 내부 EEPROM 라이브러리 추가
 
@@ -40,7 +40,7 @@
 
 // 서보 핀 (PCB 핀맵 기준)
 #define SERVO_LEFT_PIN  2          // PARA_CTRL_L → 핀 2
-#define SERVO_RIGHT_PIN 4          // PARA_CTRL_R → 핀 4 (LRCLK2)
+#define SERVO_RIGHT_PIN 3          // PARA_CTRL_R → 핀 3
 
 // SG90 360도(연속회전) 서보용 — 펄스폭(μs)으로 직접 제어.
 // PWMServo.write(angle)이 라이브러리/보드 매핑 따라 정지 펄스에서 어긋날 수 있어 writeMicroseconds 사용.
@@ -71,6 +71,10 @@ unsigned long steerTimer = 0;
 
 float headingYaw = 0; // BNO085에서 계산된 기체의 현재 절대 방향(0~360도)
 
+// ON 상태에서 연속 회전 대신 "회전 / 정지"를 반복하는 펄스 동작 타이밍.
+#define SERVO_PULSE_RUN_MS   1000  // 한 번에 전진 회전하는 시간 (1초)
+#define SERVO_PULSE_PAUSE_MS  500  // 회전 사이 잠깐 멈추는 시간 (0.5초)
+
 // ---------------------------------------------------
 // 전역 객체
 // ---------------------------------------------------
@@ -82,9 +86,9 @@ Adafruit_BMP3XX bmp;                // BMP390 객체
 sh2_SensorValue_t sensorValue;      // BNO085 센서 데이터 객체
 Adafruit_INA260 ina260;             // INA260 객체
 
-// 서보 객체 (PWMServo: 핀이 PWM 가능해야 함. Teensy 4.1에서 2, 4 모두 OK)
-PWMServo servoLeft;
-PWMServo servoRight;
+// 서보 객체 (Servo: Teensy 4.1 FlexPWM 기반. 핀 2, 4 모두 OK)
+Servo servoLeft;
+Servo servoRight;
 
 // SD 카드 파일 객체
 File packetFile;
@@ -188,11 +192,14 @@ unsigned long previousMillis = 0;
 bool plRelsCamRecording = false;
 bool groundCamRecording = false;
 
-// 서보 상태 변수 (연속회전 SG90 — ON 시간만큼 역회전 후 정지)
-bool servoActive = false;             // 현재 전진 회전 중인지
-bool servoReversing = false;          // 역회전(복귀) 중인지
-unsigned long servoOnStartMs = 0;     // ON 시작 시각
-unsigned long servoReverseEndMs = 0;  // 역회전 종료 예정 시각
+// 서보 상태 변수 (연속회전 SG90 — ON 시 1초 회전/0.5초 정지 펄스 반복, OFF 시 누적 회전시간만큼 역회전 후 정지)
+enum ServoPulsePhase { PULSE_RUN, PULSE_PAUSE };
+bool servoActive = false;                     // 현재 펄스 회전 동작 중인지 (ON 상태)
+bool servoReversing = false;                  // 역회전(복귀) 중인지
+ServoPulsePhase servoPulsePhase = PULSE_RUN;  // 펄스 현재 구간 (회전 중 / 정지 중)
+unsigned long servoPhaseStartMs = 0;          // 현재 펄스 구간 시작 시각
+unsigned long servoAccumRunMs = 0;            // ON 이후 실제로 전진 회전한 누적 시간(ms)
+unsigned long servoReverseEndMs = 0;          // 역회전 종료 예정 시각
 
 // 번와이어 상태 변수 — 각 핀 독립적으로 2초 ON 후 자동 OFF (비블로킹)
 bool firePayloadActive = false;       // FIRE_PIN  (13): 페이로드 분리
@@ -839,33 +846,39 @@ void stopAllCameras() {
 /**
  * 연속회전 SG90 두 개 동시 제어 — 비블로킹 방식.
  *
- *   active=true  → 전진 회전 시작 (정지 신호 보낼 때까지 계속 회전).
- *                  ON 시각을 기록하여 OFF 시점에 동일 시간 역회전으로 복귀시킨다.
- *   active=false → 직전 ON 지속시간만큼 역회전 예약 → updateServos()가 시각 도래 시 정지.
+ *   active=true  → 펄스 회전 시작. updateServos()가 1초 회전 / 0.5초 정지를
+ *                  OFF 명령 전까지 반복한다. 실제 전진 회전한 시간만 누적해 둔다.
+ *   active=false → 누적된 전진 회전 시간만큼 역회전 예약 → updateServos()가 시각 도래 시 정지.
  *
  * 좌/우 서보가 거울대칭 회전이 필요하면 servoRight.write()의 인자를 (180 - speed)로 바꿀 것.
  */
 void moveServos(bool active) {
   if (active) {
-    // 이미 전진 중이면 무시 (재 ON 명령은 시작 시각을 리셋하지 않도록)
+    // 이미 펄스 동작 중이면 무시 (재 ON 명령으로 누적 시간/구간이 리셋되지 않도록)
     if (servoActive) return;
     servoLeft.writeMicroseconds(SERVO_FORWARD_US);
     servoRight.writeMicroseconds(SERVO_FORWARD_US);
-    servoOnStartMs = millis();
+    servoPulsePhase = PULSE_RUN;
+    servoPhaseStartMs = millis();
+    servoAccumRunMs = 0;
     servoActive = true;
     servoReversing = false;
-    if (DEBUG) Serial.println("서보 ON — 전진 회전 시작");
+    if (DEBUG) Serial.println("서보 ON — 펄스 회전 시작 (1초 회전 / 0.5초 정지 반복)");
   } else {
     if (servoActive) {
-      unsigned long duration = millis() - servoOnStartMs;
+      // 지금까지 실제로 전진 회전한 누적 시간 계산 (정지 구간은 제외).
+      unsigned long totalRun = servoAccumRunMs;
+      if (servoPulsePhase == PULSE_RUN) {
+        totalRun += millis() - servoPhaseStartMs;  // 진행 중인 회전 구간 가산
+      }
       servoLeft.writeMicroseconds(SERVO_REVERSE_US);
       servoRight.writeMicroseconds(SERVO_REVERSE_US);
-      servoReverseEndMs = millis() + duration;
+      servoReverseEndMs = millis() + totalRun;
       servoActive = false;
       servoReversing = true;
       if (DEBUG) {
         Serial.print("서보 OFF — 역회전 시작, ");
-        Serial.print(duration);
+        Serial.print(totalRun);
         Serial.println("ms 후 정지");
       }
     } else {
@@ -918,10 +931,34 @@ void updateBurnWires() {
 }
 
 /**
- * 역회전 완료 시점이 도래했는지 매 루프에서 확인 — 도래 시 정지 신호 발송.
+ * 매 루프에서 호출 — 두 가지를 비블로킹으로 처리한다.
+ *   1) ON(펄스 동작) 중: 1초 회전 ↔ 0.5초 정지 구간을 시각 도래 시 토글.
+ *   2) OFF 후 역회전 중: 복귀 완료 시각 도래 시 정지.
  * (long)(now - target) >= 0 으로 비교해야 millis() 래핑에 안전.
  */
 void updateServos() {
+  // 1) ON 펄스 동작: 회전/정지 구간 전환
+  if (servoActive) {
+    unsigned long now = millis();
+    if (servoPulsePhase == PULSE_RUN && (long)(now - servoPhaseStartMs) >= (long)SERVO_PULSE_RUN_MS) {
+      // 1초 회전 완료 → 회전 시간 누적 후 정지 구간으로 전환
+      servoAccumRunMs += SERVO_PULSE_RUN_MS;
+      servoLeft.writeMicroseconds(SERVO_STOP_US);
+      servoRight.writeMicroseconds(SERVO_STOP_US);
+      servoPulsePhase = PULSE_PAUSE;
+      servoPhaseStartMs = now;
+      if (DEBUG) Serial.println("서보 펄스 — 정지 (0.5초)");
+    } else if (servoPulsePhase == PULSE_PAUSE && (long)(now - servoPhaseStartMs) >= (long)SERVO_PULSE_PAUSE_MS) {
+      // 0.5초 정지 완료 → 다시 회전 구간으로 전환
+      servoLeft.writeMicroseconds(SERVO_FORWARD_US);
+      servoRight.writeMicroseconds(SERVO_FORWARD_US);
+      servoPulsePhase = PULSE_RUN;
+      servoPhaseStartMs = now;
+      if (DEBUG) Serial.println("서보 펄스 — 회전 (1초)");
+    }
+  }
+
+  // 2) OFF 후 역회전 완료 시점 체크
   if (servoReversing && (long)(millis() - servoReverseEndMs) >= 0) {
     servoLeft.writeMicroseconds(SERVO_STOP_US);
     servoRight.writeMicroseconds(SERVO_STOP_US);
@@ -1174,9 +1211,9 @@ void setup() {
   PL_RELS_CAM.begin(CAM_BAUD);
   GROUND_CAM.begin(CAM_BAUD);
 
-  // 서보 초기화 — 연속회전 서보는 90이 정지. 깨끗하게 멈춘 상태로 시작.
-  servoLeft.attach(SERVO_LEFT_PIN);
-  servoRight.attach(SERVO_RIGHT_PIN);
+  // 서보 초기화 — SG90 360도 연속회전. min/max를 500~2500us로 명시해 1000/1500/2000us 범위 보장.
+  servoLeft.attach(SERVO_LEFT_PIN, 500, 2500);
+  servoRight.attach(SERVO_RIGHT_PIN, 500, 2500);
   servoLeft.writeMicroseconds(SERVO_STOP_US);
   servoRight.writeMicroseconds(SERVO_STOP_US);
   pinMode(FIRE_PIN, OUTPUT);
