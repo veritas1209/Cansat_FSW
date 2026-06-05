@@ -52,8 +52,15 @@
 #define SERVO_STOP_US      1500
 #define SERVO_FORWARD_US   1000  // ON 시 회전 속도/방향
 #define SERVO_REVERSE_US   2000  // OFF 시 복귀 회전
-#define TARGET_LAT 37.123456   // TODO: 실제 목표 위도로 변경
-#define TARGET_LON 127.123456  // TODO: 실제 목표 경도로 변경
+// ===== 목표(드롭존) 좌표 =====
+// 2026 대회 발사장(Monterey, VA) 레이아웃 KML의 "Drop Area (200' x 40')" 중심점.
+//   화면 표기: 38°22'33.66"N 79°36'28.34"W / 지면고도 817.52 m(MSL)
+//   KML 포인트(10진): 38.3760194, -79.6078740
+// 아래는 EEPROM에 저장된 좌표가 없을 때 쓰는 기본값이다. 발사 당일 드롭존이
+// 확정되면 재컴파일 없이 명령으로 갱신·영구저장한다:
+//   CMD,1062,TARGET,38.3760194,-79.6078740
+#define DEFAULT_TARGET_LAT  38.3760194   // Drop Area 중심 위도 (KML 기준)
+#define DEFAULT_TARGET_LON -79.6078740   // Drop Area 중심 경도 (KML 기준)
 
 const int PULL_TIME_MS = 200;     // 줄을 당기는 시간 (0.2초)
 const int RELEASE_TIME_MS = 190;  // 줄을 푸는 시간 (바람 장력을 고려해 당기는 시간보다 살짝 짧게 세팅)
@@ -137,6 +144,20 @@ struct RecoveryData {
 RecoveryData flightData;
 float lastSavedAltitude = 0; // 잦은 EEPROM 쓰기를 방지하기 위한 변수
 
+// ===== 목표 좌표 런타임 변수 + 전용 EEPROM 영역 =====
+// 비행 리커버리(EEPROM_ADDR=0)와 별개의 주소에 저장 → 재부팅/새 비행과 무관하게 항상 보존.
+float targetLat = DEFAULT_TARGET_LAT;
+float targetLon = DEFAULT_TARGET_LON;
+#define TARGET_EEPROM_ADDR 100
+#define TARGET_MAGIC 0x5A5A
+struct TargetData {
+  uint16_t magic;
+  float lat;
+  float lon;
+};
+void loadTarget();
+void saveTarget();
+
 // 시스템 상태 변수
 bool telemetryEnabled = false;
 bool simModeEnabled = false;
@@ -144,6 +165,7 @@ bool simEnableReceived = false;
 bool simActivateReceived = false;
 bool isCalibrated = false;
 bool firstValidReadingDiscarded = false;
+bool bmpInitialized = false;        // ★ BMP390 begin 성공 여부 — 미초기화 시 performReading 도배 방지
 FlightState currentState = LAUNCH_PAD;
 unsigned long lastSensorUpdate = 0;
 const unsigned long SENSOR_INTERVAL = 20;
@@ -153,9 +175,11 @@ const byte DESCENT_CONFIRM_COUNT = 3;
 // ★ 노이즈 방지용 연속 카운터 변수 추가
 byte ascentCount = 0;
 byte payloadReleaseCount = 0;
+byte probeReleaseCount = 0;           // ★ 계란 방출(PROBE_RELEASE) 노이즈 방지
 byte landedCount = 0;
 const byte CONFIRM_COUNT = 5;         // ASCENT, LANDED 용 (100ms 유지)
 const byte PAYLOAD_CONFIRM_COUNT = 3; // PAYLOAD_RELEASE 용 (60ms 유지)
+const byte PROBE_CONFIRM_COUNT = 3;   // PROBE_RELEASE 용 (60ms 유지 ≈ 5m/s에서 약 0.3m 하강)
 
 // 미션 시간
 byte missionTime[3] = {0, };
@@ -239,6 +263,7 @@ bool writeTelemetryToSD();
 void handleTelemetryTransmission();
 void updateFlightState();
 void processCommands();
+void handleCommandLine(String inputCmd);
 bool initSensors();
 bool updateSensorData();
 float convertNMEAtoDecimalDegrees(float nmeaCoord);
@@ -313,6 +338,7 @@ bool initSensors() {
 
 void configureBMP390() {
   if (DEBUG) Serial.println("BMP390 초기화 성공!");
+  bmpInitialized = true;            // ★ begin 성공 시에만 true
   bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
   bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
   bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
@@ -332,22 +358,35 @@ void configureINA260() {
 }
 
 bool updateSensorData() {
-  if (!simModeEnabled) {
-    if (!bmp.performReading()) {
-      if (DEBUG) Serial.println("BMP390 읽기 실패!");
-      return false;
+  // 1) BMP390 — 기압/온도. SIM 모드에서도 온도는 실측.
+  //    ★ 어떤 경우에도 여기서 함수를 빠져나가지 않는다. (BMP 실패가 나머지 센서를 가리지 않도록)
+  if (bmpInitialized) {
+    if (bmp.performReading()) {
+      if (!firstValidReadingDiscarded) {
+        firstValidReadingDiscarded = true;     // 첫 읽기는 온도 갱신만 건너뜀
+        if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
+      } else {
+        temperature = bmp.temperature;          // 실측/SIM 모두 실제 온도 사용
+      }
+    } else {
+      static unsigned long lastBmpErrMs = 0;    // 실패 로그 1초당 1회 (도배 방지)
+      if (DEBUG && (millis() - lastBmpErrMs >= 1000)) {
+        Serial.println("BMP390 읽기 실패! (1초당 1회 표시)");
+        lastBmpErrMs = millis();
+      }
     }
-    if (!firstValidReadingDiscarded) {
-      firstValidReadingDiscarded = true;
-      if (DEBUG) Serial.println("안정화를 위해 첫 번째 BMP390 읽기 무시 중");
-      return true;
+  } else {
+    static unsigned long lastBmpInitWarnMs = 0; // 미초기화 안내 5초당 1회
+    if (DEBUG && (millis() - lastBmpInitWarnMs >= 5000)) {
+      Serial.println("BMP390 미초기화 — 기압/고도 0 처리 (SIM 벤치면 정상, 실비행이면 배선 확인!)");
+      lastBmpInitWarnMs = millis();
     }
-    
-    // ★ 실제 측정 모드일 때만 온도를 업데이트 (SIM일 땐 0 고정 등 방지 위함)
-    temperature = bmp.temperature;
   }
 
+  // 2) 기압/고도 갱신 (SIM=업링크값, 실측=BMP값, BMP 없으면 0 — 내부에서 분기)
   updatePressureAndAltitude();
+
+  // 3) 나머지 센서는 BMP 상태와 무관하게 항상 읽는다.
   readIMUData();
   readVoltageAndCurrent();
   readGPSData();
@@ -356,6 +395,14 @@ bool updateSensorData() {
 }
 
 void updatePressureAndAltitude() {
+  // 실측 모드인데 BMP 미초기화 → 기압/고도 계산 불가. 0으로 두고 빠져나간다.
+  // (이 가드가 없으면 bmp.pressure=0 → pow(0/...) → altitude가 44330m로 튐)
+  if (!simModeEnabled && !bmpInitialized) {
+    pressure = 0;
+    altitude = 0;
+    return;
+  }
+
   if (simModeEnabled) {
     currentPressure = simPressure / 100.0;
   } else {
@@ -384,6 +431,14 @@ void updatePressureAndAltitude() {
 }
 
 void readIMUData() {
+  // ★ BNO085는 자체 프로세서가 있어 I2C 노이즈/전원 변동 등으로 스스로 리셋될 수 있다.
+  //    리셋되면 enableReport로 켜둔 리포트가 모두 해제되어 이벤트가 끊기고 값이 '얼어붙는다'.
+  //    리셋을 감지하면 리포트를 다시 켜준다. (Adafruit BNO08x 예제의 표준 패턴 — 누락 시 값 고정 버그)
+  if (bno08x.wasReset()) {
+    if (DEBUG) Serial.println("BNO085 리셋 감지 — 리포트 재설정");
+    configureBNO085();
+  }
+
   // if를 while로 변경하여 버퍼에 남은 데이터를 모두 소진
   while (bno08x.getSensorEvent(&sensorValue)) {
     switch (sensorValue.sensorId) {
@@ -485,7 +540,7 @@ String generateTelemetry() {
     + STATE_STRINGS[currentState] + ","
     + String(altitude, 1) + ","
     + String(temperature, 2) + ","
-    + String(pressure, 2) + ","
+    + String(pressure / 10.0, 1) + ","   // 미션가이드: PRESSURE는 kPa, 0.1 분해능 (내부 pressure는 hPa → /10)
     + String(batteryVoltage, 2) + ","
     + String(batteryCurrent, 2) + ","
     + String(gyroR, 2) + ","
@@ -533,6 +588,11 @@ void handleTelemetryTransmission() {
   } else {
     previousMillis += 1000;
     updateMissionTime();
+    // ★ 비행 중(발사대/착륙 제외)에는 매초 리커버리 저장 → 리셋되어도 미션시간 손실 최대 1초 (F2)
+    // 발사대 대기 동안엔 저장하지 않아 EEPROM 마모 최소화.
+    if (currentState != LAUNCH_PAD && currentState != LANDED) {
+      saveRecoveryData();
+    }
   }
 
   telemetryCSV = generateTelemetry();
@@ -734,7 +794,7 @@ void controlParaglider() {
           return;
         }
 
-        float targetBearing = calculateBearing(gpsLatitude, gpsLongitude, TARGET_LAT, TARGET_LON);
+        float targetBearing = calculateBearing(gpsLatitude, gpsLongitude, targetLat, targetLon);
         float headingError = targetBearing - headingYaw;
 
         // 오차를 -180 ~ +180도로 정규화
@@ -970,16 +1030,41 @@ void updateServos() {
 /**
  * Serial 또는 XBee에서 수신한 명령어 처리
  */
+/**
+ * 명령 입력 처리 — 비블로킹.
+ * 기존 readStringUntil('\n')은 개행이 도착하기 전 최대 1초간 루프를 멈춰
+ * 1Hz 송신/서보 조향을 지연시켰다. 여기서는 들어온 바이트만 즉시 버퍼에
+ * 누적하고, 줄 끝(\n 또는 \r)을 만났을 때만 명령을 처리한다 → 블로킹 없음.
+ */
 void processCommands() {
-  String inputCmd = "";
+  static String xbeeLine = "";
+  static String serialLine = "";
 
-  if (XBEE.available() > 0) {
-    inputCmd = XBEE.readStringUntil('\n');
-  }
-  else if (Serial.available() > 0) {
-    inputCmd = Serial.readStringUntil('\n');
+  while (XBEE.available() > 0) {
+    char c = (char)XBEE.read();
+    if (c == '\n' || c == '\r') {
+      if (xbeeLine.length() > 0) { handleCommandLine(xbeeLine); xbeeLine = ""; }
+    } else {
+      xbeeLine += c;
+      if (xbeeLine.length() > 120) xbeeLine = "";  // 비정상 장문 방지(버퍼 폭주 가드)
+    }
   }
 
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (serialLine.length() > 0) { handleCommandLine(serialLine); serialLine = ""; }
+    } else {
+      serialLine += c;
+      if (serialLine.length() > 120) serialLine = "";
+    }
+  }
+}
+
+/**
+ * 완성된 한 줄의 명령을 파싱·실행한다. (processCommands가 줄 단위로 호출)
+ */
+void handleCommandLine(String inputCmd) {
   if (inputCmd.length() > 0) {
     cmdBuffer = inputCmd;
     parseCommand(cmdBuffer);
@@ -1023,6 +1108,21 @@ void processCommands() {
         } else {
           firePayloadBurnWire();
           cmdEcho = "BURN_PAYLOAD";
+        }
+      }
+      else if (cmdParts[2].equals("TARGET")) {
+        // CMD,1062,TARGET,<lat>,<lon> — 드롭존 좌표 설정 후 EEPROM 영구 저장
+        float newLat = cmdParts[3].toFloat();
+        float newLon = cmdParts[4].toFloat();
+        // toFloat()는 파싱 실패 시 0.0 반환 → (0,0) 거부로 오설정 방지
+        if (newLat != 0.0 && newLon != 0.0) {
+          targetLat = newLat;
+          targetLon = newLon;
+          saveTarget();
+          cmdEcho = "TARGET_SET";
+        } else {
+          cmdEcho = "TARGET_ERR";
+          if (DEBUG) Serial.println("TARGET 명령 파싱 실패 — 형식: CMD,1062,TARGET,<lat>,<lon>");
         }
       }
 
@@ -1085,6 +1185,9 @@ void updateFlightState() {
         if (payloadReleaseCount >= PAYLOAD_CONFIRM_COUNT) {
           currentState = PAYLOAD_RELEASE;
           if (DEBUG) Serial.println("상태 전환: PAYLOAD_RELEASE (페이로드 방출)");
+          // ★ 자율 조향 진입 직전 수동 서보 펄스 머신 강제 정지 (updateServos와 controlParaglider 충돌 방지)
+          servoActive = false;
+          servoReversing = false;
           firePayloadBurnWire();              // ★ 핀 13 — 페이로드 분리
         }
       } else {
@@ -1094,9 +1197,14 @@ void updateFlightState() {
 
     case PAYLOAD_RELEASE:
       if (altitude <= 2.3) {
-        currentState = PROBE_RELEASE;
-        if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
-        fireProbeBurnWire();                  // ★ 핀 26 — 계란 분리
+        probeReleaseCount++;
+        if (probeReleaseCount >= PROBE_CONFIRM_COUNT) {
+          currentState = PROBE_RELEASE;
+          if (DEBUG) Serial.println("상태 전환: PROBE_RELEASE (프로브 방출)");
+          fireProbeBurnWire();                  // ★ 핀 26 — 계란 분리
+        }
+      } else {
+        probeReleaseCount = 0;
       }
       break;
 
@@ -1152,6 +1260,7 @@ void resetParameters() {
   descendingCount = 0;
   ascentCount = 0;
   payloadReleaseCount = 0;
+  probeReleaseCount = 0;
   landedCount = 0;
 }
 
@@ -1188,6 +1297,8 @@ void loadRecoveryData() {
     // 리커버리가 완료되면 기존의 지표면 기압(보정치) 대신 표준 기압으로 
     // 임시 계산되도록 isCalibrated를 강제 활성화 (공중에서 재부팅 시 막힘 방지)
     isCalibrated = true; 
+    telemetryEnabled = true;     // ★ 재부팅 전 송신 중이었으므로 자동 재개 (F1/F2: 리셋 후에도 임무 지속)
+    previousMillis = millis();   // ★ 누적 보정 기준 재설정 → 재개 직후 패킷 폭주/미션시간 점프 방지
     if (DEBUG) Serial.println("EEPROM: 공중 재부팅 감지! 기존 비행 데이터 복구 완료!");
   } else {
     if (DEBUG) Serial.println("EEPROM: 정상 초기 구동 (저장된 복구 데이터 없음)");
@@ -1198,6 +1309,36 @@ void clearRecoveryData() {
   flightData.magicNumber = 0x0000; // 암호를 지워서 초기화 상태로 만듦
   EEPROM.put(EEPROM_ADDR, flightData);
   if (DEBUG) Serial.println("EEPROM: 리커버리 데이터 초기화 완료");
+}
+
+// ---------------------------------------------------
+// 목표 좌표(EEPROM) 제어 함수
+// ---------------------------------------------------
+void loadTarget() {
+  TargetData t;
+  EEPROM.get(TARGET_EEPROM_ADDR, t);
+  if (t.magic == TARGET_MAGIC) {
+    targetLat = t.lat;
+    targetLon = t.lon;
+    if (DEBUG) {
+      Serial.print("EEPROM: 목표좌표 로드 ");
+      Serial.print(targetLat, 6); Serial.print(", "); Serial.println(targetLon, 6);
+    }
+  } else {
+    if (DEBUG) Serial.println("EEPROM: 저장된 목표좌표 없음 — 기본값(플레이스홀더) 사용. CMD,1062,TARGET로 반드시 설정할 것!");
+  }
+}
+
+void saveTarget() {
+  TargetData t;
+  t.magic = TARGET_MAGIC;
+  t.lat = targetLat;
+  t.lon = targetLon;
+  EEPROM.put(TARGET_EEPROM_ADDR, t);
+  if (DEBUG) {
+    Serial.print("EEPROM: 목표좌표 저장 ");
+    Serial.print(targetLat, 6); Serial.print(", "); Serial.println(targetLon, 6);
+  }
 }
 
 // ---------------------------------------------------
@@ -1225,6 +1366,7 @@ void setup() {
   // ★ 센서 초기화 직후(SD begin 완료 후) 파일을 한 번만 열어둠
   packetFile = SD.open(CSV_FILENAME, FILE_WRITE);
   loadRecoveryData();
+  loadTarget();
 
   if (DEBUG) Serial.println("Test_FSW 시작 — CMD,1062,TEST/CAMERA/SERVO/BURN 사용 가능");
 }
